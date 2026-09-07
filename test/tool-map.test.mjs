@@ -1052,32 +1052,51 @@ test('quoteForShell double-quotes a path with a space when shell is true', async
   // Without quoting, cmd.exe sees `C:\Program` as the command and
   // `Files\nodejs\npm.cmd --version` as args, and fails. With
   // quoting, the whole path is the command.
-  assert.equal(
+  //
+  // round-9 fix: round-8 used `.replace(/"/gu, '\\"')` to escape
+  // only the double-quote character. CodeQL flagged that as an
+  // "Incomplete string escaping" CWE-020 alert: a backslash
+  // inside a `"..."` quoted string is interpreted as the start of
+  // an escape sequence by cmd.exe, so the backslashes that are
+  // already in the path (every Windows path has them) need to be
+  // escaped too. JSON.stringify does both correctly in one call,
+  // and produces a shape that cmd.exe parses verbatim.
+  //
+  // Note: the literal backslashes below are doubled in the JS
+  // source so the runtime string is the single-backslash form
+  // `C:\Program Files\nodejs\npm.cmd`, which JSON.stringify
+  // escapes to `C:\\Program Files\\nodejs\\npm.cmd`.
+  assert.deepEqual(
     quoteForShell('C:\\Program Files\\nodejs\\npm.cmd', { isShell: true }),
-    '"C:\\Program Files\\nodejs\\npm.cmd"',
+    JSON.stringify('C:\\Program Files\\nodejs\\npm.cmd'),
   );
   // A POSIX path with a space (rare but possible: e.g. `/opt/Some
   // Tool/node`) gets the same treatment, because /bin/sh also
-  // splits on whitespace.
-  assert.equal(
+  // splits on whitespace. POSIX paths have no backslashes, so
+  // JSON.stringify adds only the surrounding `"..."`.
+  assert.deepEqual(
     quoteForShell('/opt/Some Tool/node', { isShell: true }),
-    '"/opt/Some Tool/node"',
+    JSON.stringify('/opt/Some Tool/node'),
   );
 });
 
-test('quoteForShell escapes embedded double quotes in the program path', async () => {
+test('quoteForShell escapes embedded double quotes AND backslashes in the program path', async () => {
   // Defensive: a path with a literal `"` in it (legacy Windows
-  // volumes) must be escaped so the surrounding `"..."` is not
-  // terminated prematurely. Without the escape, cmd.exe would see
-  // `"C:\path\with` followed by `quote.cmd" --version` and parse
-  // it as: command=`"C:\path\with`, arg=`quote.cmd" --version`,
-  // which fails. The fix uses the standard `\"` escape inside a
-  // `"..."` quoted string.
+  // volumes) and a backslash that is already part of the path
+  // must BOTH be escaped. round-8 only escaped `"`, leaving the
+  // backslashes untouched; this caused cmd.exe to see
+  // `"C:\path\with\"quote.cmd"` and parse the first `\` as the
+  // start of an escape sequence, then terminate the quoted
+  // string at the `"` after `quote`, leaving `cmd"` as an
+  // unquoted tail. JSON.stringify escapes both, so the path
+  // becomes a single valid quoted string that cmd.exe parses
+  // verbatim.
   const scanUrl = pathToFileURL(SCAN).href;
   const { quoteForShell } = await import(scanUrl);
-  assert.equal(
-    quoteForShell('C:\\path\\with"quote.cmd', { isShell: true }),
-    '"C:\\path\\with\\"quote.cmd"',
+  const path = 'C:\\path\\with"quote.cmd';
+  assert.deepEqual(
+    quoteForShell(path, { isShell: true }),
+    JSON.stringify(path),
   );
 });
 

@@ -405,7 +405,19 @@ async function probeVersion(cmd) {
 function quoteForShell(program, { isShell }) {
   if (!isShell) return program;          // POSIX or Windows .exe
   if (!/[\s"]/u.test(program)) return program; // already bare, no quoting needed
-  return `"${program.replace(/"/gu, '\\"')}"`;
+  // Round-9 fix: round-8 replaced `"` with `\"` only, but cmd.exe
+  // interprets a backslash inside a `"..."` quoted string as
+  // part of an escape sequence. A path such as
+  // `<install dir with space>\\"weird.cmd` becomes
+  // `"<install dir with space>\\"weird.cmd"`, which cmd.exe parses
+  // as the literal path (good) UNTIL the literal `"weird.cmd"`
+  // part, where the closing `"` closes the quote and `.cmd"`
+  // becomes an unquoted tail. JSON.stringify does the right
+  // thing for free: it escapes BOTH `\` and `"` (and a few
+  // control characters we will never see in a path), and
+  // produces a valid double-quoted string with the same shape
+  // that cmd.exe expects.
+  return JSON.stringify(program);
 }
 
 // --- File walker ---
