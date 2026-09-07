@@ -342,7 +342,7 @@ jobs:
               throw "test a: path was '$($mock.path)' (want '/v1/coding_plan/remains')"
             }
             if ($null -eq $data) {
-              throw "test a: Get-5hUsage returned `$null` with the env-var token set (fixture field-name contract is broken)"
+              throw "test a: Get-5hUsage returned null with the env-var token set (fixture field-name contract is broken)"
             }
             if ($data.remainingPct -ne 84) {
               throw "test a: remainingPct=$($data.remainingPct) (want 84)"
@@ -384,7 +384,7 @@ jobs:
             if ($mock.auth -ne "Bearer $cfgToken") {
               throw "test b: Authorization was '$($mock.auth)' (want 'Bearer $cfgToken')"
             }
-            if ($null -eq $data) { throw "test b: Get-5hUsage returned `$null` with config.json token" }
+            if ($null -eq $data) { throw "test b: Get-5hUsage returned null with config.json token" }
             if ($data.remainingPct -ne 84) { throw "test b: remainingPct=$($data.remainingPct) (want 84)" }
             if ($data.resetMs      -ne 16200000) { throw "test b: resetMs=$($data.resetMs) (want 16200000)" }
             Write-Host "test b (config-only token): OK remainingPct=$($data.remainingPct)% resetMs=$($data.resetMs)"
@@ -394,13 +394,13 @@ jobs:
           }
 
           # Test c: no token anywhere (env vars cleared,
-          # config.json removed) -> Get-5hUsage returns `$null`
+          # config.json removed) -> Get-5hUsage returns null
           # at line 419 without hitting the network.
           Remove-Item (Join-Path $cfgDir 'config.json') -Force -ErrorAction SilentlyContinue
           $script:plan5hToken = $null
           $data = Get-5hUsage
           if ($null -ne $data) {
-            throw "test c: Get-5hUsage should return `$null` with no token, got: $($data | ConvertTo-Json -Compress)"
+            throw "test c: Get-5hUsage should return null with no token, got: $data"
           }
-          Write-Host "test c (no token): OK returned `$null`"
+          Write-Host "test c (no token): OK returned null"
           Write-Host "Get-5hUsage via dot-source + matching fixture + token-source precedence: 3/3 OK"
