@@ -1015,3 +1015,86 @@ test('XDG_DATA_HOME is honoured when PLUGIN_DATA is unset', () => {
     rmSync(xdg, { recursive: true, force: true });
   }
 });
+
+// --- quoteForShell (round-8, PR #5 amszuidas) -------------------------------
+// amszuidas round-8 (PR #5, 2026-09-07T03:17:11Z): on Windows, when
+// `shouldUseShell` is true (the .cmd / .bat branch), execFile passes the
+// program string to cmd.exe verbatim. A path that contains a space
+// (e.g. `C:\Program Files\nodejs\npm.cmd`) is therefore split at the
+// first space; the failure is silently swallowed by probeVersion's
+// try/catch and the tool is reported with no version. The fix is
+// `quoteForShell`: wrap the path in `"..."` and escape any embedded
+// `"` so cmd.exe treats the whole path as the command. These four
+// tests pin the contract on a pure function so a future regression
+// (e.g. a refactor that drops the helper, or a copy-paste that
+// forgets the escape) breaks CI on every platform without needing a
+// Windows runner.
+
+test('quoteForShell is a no-op when the program has no spaces or quotes', async () => {
+  const scanUrl = pathToFileURL(SCAN).href;
+  const { quoteForShell } = await import(scanUrl);
+  // Bare-name POSIX probe: even with `isShell: true`, no quoting needed.
+  assert.equal(quoteForShell('node', { isShell: true }), 'node');
+  // Windows .exe case: `isShell: false` means Node hands argv to
+  // CreateProcessW directly, where the kernel handles quoting.
+  assert.equal(quoteForShell('node', { isShell: false }), 'node');
+  // A POSIX path with no spaces: same result, no quoting.
+  assert.equal(
+    quoteForShell('/usr/local/bin/node', { isShell: true }),
+    '/usr/local/bin/node',
+  );
+});
+
+test('quoteForShell double-quotes a path with a space when shell is true', async () => {
+  const scanUrl = pathToFileURL(SCAN).href;
+  const { quoteForShell } = await import(scanUrl);
+  // The motivating case: `C:\Program Files\nodejs\npm.cmd`.
+  // Without quoting, cmd.exe sees `C:\Program` as the command and
+  // `Files\nodejs\npm.cmd --version` as args, and fails. With
+  // quoting, the whole path is the command.
+  assert.equal(
+    quoteForShell('C:\\Program Files\\nodejs\\npm.cmd', { isShell: true }),
+    '"C:\\Program Files\\nodejs\\npm.cmd"',
+  );
+  // A POSIX path with a space (rare but possible: e.g. `/opt/Some
+  // Tool/node`) gets the same treatment, because /bin/sh also
+  // splits on whitespace.
+  assert.equal(
+    quoteForShell('/opt/Some Tool/node', { isShell: true }),
+    '"/opt/Some Tool/node"',
+  );
+});
+
+test('quoteForShell escapes embedded double quotes in the program path', async () => {
+  // Defensive: a path with a literal `"` in it (legacy Windows
+  // volumes) must be escaped so the surrounding `"..."` is not
+  // terminated prematurely. Without the escape, cmd.exe would see
+  // `"C:\path\with` followed by `quote.cmd" --version` and parse
+  // it as: command=`"C:\path\with`, arg=`quote.cmd" --version`,
+  // which fails. The fix uses the standard `\"` escape inside a
+  // `"..."` quoted string.
+  const scanUrl = pathToFileURL(SCAN).href;
+  const { quoteForShell } = await import(scanUrl);
+  assert.equal(
+    quoteForShell('C:\\path\\with"quote.cmd', { isShell: true }),
+    '"C:\\path\\with\\"quote.cmd"',
+  );
+});
+
+test('quoteForShell leaves the program untouched when shell is false', async () => {
+  // Windows .exe / Linux binary case: shell: false, Node hands argv
+  // to CreateProcessW / execve directly. The kernel handles argv
+  // quoting; our function must not mangle the path with `"..."`.
+  // (The .cmd branch never reaches this case because shouldUseShell
+  // is true for .cmd / .bat. This test pins the no-op for .exe.)
+  const scanUrl = pathToFileURL(SCAN).href;
+  const { quoteForShell } = await import(scanUrl);
+  assert.equal(
+    quoteForShell('C:\\Program Files\\nodejs\\node.exe', { isShell: false }),
+    'C:\\Program Files\\nodejs\\node.exe',
+  );
+  assert.equal(
+    quoteForShell('/usr/bin/node', { isShell: false }),
+    '/usr/bin/node',
+  );
+});

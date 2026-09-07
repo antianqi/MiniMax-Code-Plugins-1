@@ -362,18 +362,50 @@ async function probeVersion(cmd) {
   // R4-3/R4-4 tests are smoke tests for the PATH+extension lookup,
   // not bug-replication tests. The R4-2 unit test IS a real
   // bug-replication test for the resolveProgram change itself.
+  //
+  // Round-8 finding: with `shell: true`, Node passes the program
+  // string to cmd.exe verbatim. A resolved path that contains a
+  // space (typical of the well-known `<install dir with space>`
+  // shim that wraps a Node-style tool) MUST be double-quoted,
+  // otherwise cmd.exe splits the command at the space and the
+  // failure is silently swallowed by the surrounding try/catch.
+  // See Node's child_process docs on "Spawning .bat and .cmd files
+  // on Windows" for the requirement.
   const resolved = resolveProgram(cmd[0]);
   const program = resolved || cmd[0];
+  const useShell = shouldUseShell(cmd[0]);
+  const execTarget = quoteForShell(program, { isShell: useShell });
   try {
-    const { stdout } = await execFileP(program, cmd.slice(1), {
+    const { stdout } = await execFileP(execTarget, cmd.slice(1), {
       timeout: 5000,
       windowsHide: true,
-      shell: shouldUseShell(cmd[0]),
+      shell: useShell,
     });
     const first = (stdout || '').split(/\r?\n/)[0].trim();
     if (first) return first;
   } catch { /* timeout, missing, or non-zero exit - all OK */ }
   return null;
+}
+
+// Quote a program path for the shell that execFile will use.
+//
+// - POSIX (`shell: true`): shell is /bin/sh, no quoting needed (POSIX
+//   probe names are bare names without spaces).
+// - Windows + `shell: true` (the .cmd/.bat case): cmd.exe parses the
+//   program string verbatim, so a path with a space or a `"` must be
+//   wrapped in `"..."` and any embedded `"` escaped as `\"`. Otherwise
+//   cmd.exe splits at the first space and reports an error that the
+//   surrounding try/catch in probeVersion silently swallows.
+// - Windows + `shell: false` (the .exe case): Node hands argv to
+//   CreateProcessW directly; quoting is the kernel's job, not ours.
+//   No string munging is needed.
+//
+// The function is pure and exported via internal scope so a unit
+// test can pin the contract without spawning a process.
+function quoteForShell(program, { isShell }) {
+  if (!isShell) return program;          // POSIX or Windows .exe
+  if (!/[\s"]/u.test(program)) return program; // already bare, no quoting needed
+  return `"${program.replace(/"/gu, '\\"')}"`;
 }
 
 // --- File walker ---
@@ -652,6 +684,7 @@ export {
   isToolFile, classify, walk,
   renderMarkdown, renderSummary,
   resolveProgram, shellForFile, shouldUseShell,
+  quoteForShell,
   probeVersion,
 };
 
