@@ -215,107 +215,192 @@ jobs:
           }
           Write-Host "Hook PreToolUse OK: state=$($status.state) source=$($status.source) message='$($status.message)'"
 
-      # 4) Mocked usage-API behavior. mcode-status-detect.ps1's
-      #    Get-5hUsage function constructs the URL via the
-      #    byte-array `_s` helper, reads the bearer token from
-      #    $env:MINIMAX_OAUTH_TOKEN (or config.json planApiToken),
-      #    and calls Invoke-RestMethod against api.minimaxi.com.
-      #    The detector's main loop is not exercised (it would
-      #    block for 60s+ and require a real mcode install); we
-      #    instead exercise the exact same `(url, headers, token)`
-      #    triple in this step. A Start-Job starts an
-      #    HttpListener on a free 127.0.0.1 port and sync-waits
-      #    for one request; the job records the Authorization
-      #    header, returns a synthetic model_remains JSON, and
-      #    returns the captured header + path via Receive-Job.
-      - name: Mocked usage-API roundtrip via local HttpListener (round-5 requirement #3)
+      # 4) Get-5hUsage via dot-source + matching fixture + token
+      #    source precedence (amszuidas round-8 P2 fix on
+      #    2026-09-07T03:17:02Z, head 812dd29).
+      #
+      #    Round-5 step 4 (this step's predecessor) reconstructed
+      #    the URL and headers by hand and called Invoke-RestMethod
+      #    directly, with a fixture that used field names the
+      #    implementation does NOT read (model/remainingPct/resetMs
+      #    vs model_name/current_interval_remaining_percent/remains_time).
+      #    That meant: a future change to the implementation's
+      #    field-name contract would NOT fail this CI step, because
+      #    the CI step never went through the implementation. This
+      #    round-9 step fixes that by dot-sourcing the file with
+      #    -Once (so the main loop runs exactly once and breaks,
+      #    per the `$Once` switch in the file) and then calling
+      #    `Get-5hUsage` directly. The mock server returns a
+      #    payload with the SAME field names the implementation
+      #    reads, so a future field-name regression will produce
+      #    `null` here and fail the assertion. Token-source
+      #    precedence is covered by three sub-tests: env-var wins
+      #    over config.json, config.json alone works, no token
+      #    returns $null.
+      #
+      #    Dot-sourcing -Once: the file's main loop
+      #    (line 519-641) is wrapped in `if (-not $Once) { ... }`
+      #    for the pidFile write, and the inner `while ($true)`
+      #    breaks on the first iteration when `$Once` is true
+      #    (line 639). On that one iteration `Get-5hUsage` is
+      #    called from `Refresh-5hUsage` (line 609), but
+      #    `$script:plan5hToken` is still null at that point
+      #    (this step sets it just before calling
+      #    `Get-5hUsage` below), so the call returns $null at
+      #    line 419 without touching the network. The single
+      #    loop iteration also writes `$APPDATA/mcode-island/status.json`
+      #    via `Write-Status`, which is fine: the isolated
+      #    APPDATA from step 2 is in $env:APPDATA, so the
+      #    write goes to the runner temp, not the real
+      #    machine's APPDATA.
+      - name: Get-5hUsage via dot-source + matching fixture + token-source precedence (round-8 P2 fix)
         env:
           FAKE_TOKEN: 'ci-fake-oauth-token-1234567890abcdef'
         run: |
-          # Pick a free port before starting the listener, so the
-          # Invoke-RestMethod in the main step can use it.
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $OutputEncoding = [System.Text.Encoding]::UTF8
+          try { chcp 65001 | Out-Null } catch {}
+
+          $psPath = 'plugins/antianqi/mcode-island/mcode-status-detect.ps1'
+          if (-not (Test-Path $psPath)) { throw "$psPath not found" }
+
+          # Dot-source with -Once: imports all functions, the
+          # main loop runs once and breaks (line 639 in
+          # mcode-status-detect.ps1).
+          . $psPath -Once
+
+          # Pick a free port for the mock listener.
           $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
           $probe.Start()
           $freePort = [int]$probe.LocalEndpoint.Port
           $probe.Stop()
           Write-Host "Picked free port: $freePort"
 
-          # Background job: start HttpListener, sync-wait one
-          # request, return the captured header + path.
-          $job = Start-Job -ScriptBlock {
-            param($port)
-            $listener = [System.Net.HttpListener]::new()
-            $listener.Prefixes.Add("http://127.0.0.1:$port/")
-            $listener.Start()
-            try {
-              $ctx = $listener.GetContext()  # blocks until a request arrives
-              $auth = $ctx.Request.Headers['Authorization']
-              $path = $ctx.Request.Url.AbsolutePath
-              $body = '{"model_remains":[{"model":"general","remainingPct":84,"resetMs":16200000}]}'
-              $bytes = [System.Text.Encoding]::UTF8.GetBytes($body)
-              $ctx.Response.StatusCode = 200
-              $ctx.Response.ContentType = 'application/json'
-              $ctx.Response.ContentLength64 = $bytes.Length
-              $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
-              $ctx.Response.Close()
-              [PSCustomObject]@{ auth = $auth; path = $path }
-            } finally {
-              $listener.Stop()
-              $listener.Close()
-            }
-          } -ArgumentList $freePort
+          # Redirect the module-scope $PLAN_API_HOST to our
+          # mock. The file's byte-array `_s` helper has already
+          # resolved the real https URL into this var; we
+          # reassign to the localhost mock listener. $PLAN_API_PATH
+          # stays as /v1/coding_plan/remains, which is the
+          # same path the implementation requests.
+          $script:PLAN_API_HOST = "http://127.0.0.1:$freePort"
 
+          # Fixture body. Field names MATCH what Get-5hUsage
+          # actually reads (model_name / current_interval_remaining_percent
+          # / remains_time), NOT the round-5 fixture's
+          # (model / remainingPct / resetMs). A future change
+          # that breaks the field-name contract will cause the
+          # function to return $null at line 432 and fail the
+          # assertion below.
+          $fixtureBody = '{"model_remains":[{"model_name":"general","current_interval_remaining_percent":84,"remains_time":16200000}]}'
+
+          # Mock-server helper: one Start-Job per test, each
+          # job handles exactly one request and returns the
+          # captured Authorization header + path. Using one
+          # job per test (rather than one job for all three
+          # tests) keeps each test independent: a failure in
+          # test a cannot corrupt the mock for tests b or c.
+          function Run-MockOneRequest {
+            param($port, $body)
+            $j = Start-Job -ScriptBlock {
+              param($p, $b)
+              $listener = [System.Net.HttpListener]::new()
+              $listener.Prefixes.Add("http://127.0.0.1:$p/")
+              $listener.Start()
+              try {
+                $ctx = $listener.GetContext()
+                $auth = $ctx.Request.Headers['Authorization']
+                $path = $ctx.Request.Url.AbsolutePath
+                $bytes = [System.Text.Encoding]::UTF8.GetBytes($b)
+                $ctx.Response.StatusCode = 200
+                $ctx.Response.ContentType = 'application/json'
+                $ctx.Response.ContentLength64 = $bytes.Length
+                $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+                $ctx.Response.Close()
+                [PSCustomObject]@{ auth = $auth; path = $path }
+              } finally {
+                $listener.Stop()
+                $listener.Close()
+              }
+            } -ArgumentList $port, $body
+            return ,$j
+          }
+
+          # Test a: env-var token wins; implementation must
+          # read the new field names; return value must be
+          # the documented `{ remainingPct, resetMs }` shape.
+          $jobA = Run-MockOneRequest $freePort $fixtureBody
           try {
-            # 4a) Token resolution: env wins over config.json.
-            #     Write a different token to config.json (the
-            #     fallback path); the env var must still win.
             $env:MINIMAX_OAUTH_TOKEN = $env:FAKE_TOKEN
-            $cfgDir = Join-Path $env:APPDATA 'mcode-island'
-            if (-not (Test-Path $cfgDir)) { New-Item -ItemType Directory -Path $cfgDir -Force | Out-Null }
-            @{ planApiToken = 'config-token-should-not-be-used' } | ConvertTo-Json |
-              Out-File -FilePath (Join-Path $cfgDir 'config.json') -Encoding utf8
-
-            # 4b) Reconstruct the URL the detector uses (the
-            #     source file constructs it via the byte-array
-            #     `_s` helper, which is private to
-            #     mcode-status-detect.ps1; we don't want to
-            #     dot-source the file because the main loop
-            #     would block in CI). The literal path the
-            #     detector requests is /v1/coding_plan/remains.
-            $url = "http://127.0.0.1:$freePort/v1/coding_plan/remains"
-            $headers = @{
-              'Authorization' = "Bearer $env:MINIMAX_OAUTH_TOKEN"
-              'MM-API-Source' = 'MiniMax-MCP'
-            }
-            $resp = Invoke-RestMethod -Uri $url -Headers $headers -TimeoutSec 10 -Method Get -ErrorAction Stop
-
-            # 4c) The mock must have seen the bearer token AND
-            #     the request path the detector uses.
-            $mock = $job | Wait-Job -Timeout 15 | Receive-Job
-            if (-not $mock) {
-              throw "listener job did not complete within 15s (state: $($job.State))"
-            }
+            $script:plan5hToken = $env:FAKE_TOKEN
+            $data = Get-5hUsage
+            $mock = $jobA | Wait-Job -Timeout 15 | Receive-Job
+            if (-not $mock) { throw "test a: listener did not complete (state $($jobA.State))" }
             if ($mock.auth -ne "Bearer $env:FAKE_TOKEN") {
-              throw "mock saw Authorization='$($mock.auth)' (want 'Bearer $env:FAKE_TOKEN')"
+              throw "test a: Authorization was '$($mock.auth)' (want 'Bearer $env:FAKE_TOKEN')"
             }
             if ($mock.path -ne '/v1/coding_plan/remains') {
-              throw "mock saw path='$($mock.path)' (want '/v1/coding_plan/remains')"
+              throw "test a: path was '$($mock.path)' (want '/v1/coding_plan/remains')"
             }
-
-            # 4d) Response shape: same one Get-5hUsage in
-            #     mcode-status-detect.ps1 parses (model_remains[],
-            #     taking the first entry's remainingPct + resetMs).
-            if (-not $resp -or -not $resp.model_remains) {
-              throw "response shape: missing model_remains, got: $($resp | ConvertTo-Json -Compress)"
+            if ($null -eq $data) {
+              throw "test a: Get-5hUsage returned `$null` with the env-var token set (fixture field-name contract is broken)"
             }
-            $first = @($resp.model_remains)[0]
-            if ($first.remainingPct -ne 84 -or $first.resetMs -ne 16200000) {
-              throw "first model_remains entry: got remainingPct=$($first.remainingPct) resetMs=$($first.resetMs) (want 84 / 16200000)"
+            if ($data.remainingPct -ne 84) {
+              throw "test a: remainingPct=$($data.remainingPct) (want 84)"
             }
-            Write-Host "Mocked usage-API OK: auth='$($mock.auth)' path='$($mock.path)' first entry=remainingPct=$($first.remainingPct)% resetMs=$($first.resetMs)"
+            if ($data.resetMs -ne 16200000) {
+              throw "test a: resetMs=$($data.resetMs) (want 16200000)"
+            }
+            Write-Host "test a (env token, matching fixture): OK remainingPct=$($data.remainingPct)% resetMs=$($data.resetMs)"
           } finally {
-            # Make sure the job is fully reaped even on
-            # exception, so the listener is released.
-            if ($job.State -ne 'Completed') { Stop-Job $job }
-            Remove-Job $job -Force
+            if ($jobA.State -ne 'Completed') { Stop-Job $jobA }
+            Remove-Job $jobA -Force
           }
+
+          # Test b: clear env vars, only config.json has a
+          # token. Re-deriving $script:plan5hToken from
+          # config.json the same way the file's top-level
+          # init does (line 124-125). Get-5hUsage must pick
+          # up the config.json token.
+          $cfgDir = Join-Path $env:APPDATA 'mcode-island'
+          if (-not (Test-Path $cfgDir)) { New-Item -ItemType Directory -Path $cfgDir -Force | Out-Null }
+          $cfgToken = 'ci-cfg-only-token-abcdef0123456789'
+          @{ planApiToken = $cfgToken } | ConvertTo-Json |
+            Out-File -FilePath (Join-Path $cfgDir 'config.json') -Encoding utf8
+          Remove-Item 'env:MINIMAX_OAUTH_TOKEN' -ErrorAction SilentlyContinue
+          Remove-Item 'env:MINIMAX_API_KEY'      -ErrorAction SilentlyContinue
+          $cfg = Get-Content (Join-Path $cfgDir 'config.json') -Raw | ConvertFrom-Json
+          $script:plan5hToken = $null
+          if ($cfg.PSObject.Properties['planApiToken'] -and $cfg.planApiToken) {
+            $script:plan5hToken = [string]$cfg.planApiToken
+          }
+          if ($script:plan5hToken -ne $cfgToken) {
+            throw "test b: config.json planApiToken was not picked up (got '$($script:plan5hToken)')"
+          }
+          $jobB = Run-MockOneRequest $freePort $fixtureBody
+          try {
+            $data = Get-5hUsage
+            $mock = $jobB | Wait-Job -Timeout 15 | Receive-Job
+            if (-not $mock) { throw "test b: listener did not complete (state $($jobB.State))" }
+            if ($mock.auth -ne "Bearer $cfgToken") {
+              throw "test b: Authorization was '$($mock.auth)' (want 'Bearer $cfgToken')"
+            }
+            if ($null -eq $data) { throw "test b: Get-5hUsage returned `$null` with config.json token" }
+            if ($data.remainingPct -ne 84) { throw "test b: remainingPct=$($data.remainingPct) (want 84)" }
+            if ($data.resetMs      -ne 16200000) { throw "test b: resetMs=$($data.resetMs) (want 16200000)" }
+            Write-Host "test b (config-only token): OK remainingPct=$($data.remainingPct)% resetMs=$($data.resetMs)"
+          } finally {
+            if ($jobB.State -ne 'Completed') { Stop-Job $jobB }
+            Remove-Job $jobB -Force
+          }
+
+          # Test c: no token anywhere (env vars cleared,
+          # config.json removed) -> Get-5hUsage returns `$null`
+          # at line 419 without hitting the network.
+          Remove-Item (Join-Path $cfgDir 'config.json') -Force -ErrorAction SilentlyContinue
+          $script:plan5hToken = $null
+          $data = Get-5hUsage
+          if ($null -ne $data) {
+            throw "test c: Get-5hUsage should return `$null` with no token, got: $($data | ConvertTo-Json -Compress)"
+          }
+          Write-Host "test c (no token): OK returned `$null`"
+          Write-Host "Get-5hUsage via dot-source + matching fixture + token-source precedence: 3/3 OK"
