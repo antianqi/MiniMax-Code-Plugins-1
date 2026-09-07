@@ -627,6 +627,100 @@ def main() -> int:
     else:
         record_skip("CLI sessions (stub unreachable / SMOKE_SKIP_LIVE)")
 
+    # --- 25. SKILL.md init snippet runs from `python -c` with PLUGIN_ROOT -
+    # amszuidas round-8 (PR #30, 2026-09-07T03:17:16Z): the copyable
+    # initialization example in skills/acp-inbox-bridge/SKILL.md:74-86
+    # previously claimed the host would inject `$ACP_PLUGIN_ROOT`; no
+    # runtime actually does. Fix: the snippet now reads the portable
+    # host variable `$PLUGIN_ROOT` (mcode 0.2.4+ sets it when the Skill
+    # is loaded), falling back to `__file__` only when the caller wrote
+    # the snippet into a `.py` file. This check exercises the snippet
+    # as documented: a `python -c "..."` invocation with `PLUGIN_ROOT`
+    # exported in the child env, so the runtime injection is simulated
+    # from an ordinary shell context.
+    print("\n[Check 25] SKILL.md init snippet runs from `python -c` when PLUGIN_ROOT is set")
+    try:
+        skill_md = (PLUGIN_ROOT / "skills" / "acp-inbox-bridge" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        m = re.search(r"```python\n(.*?)```", skill_md, re.DOTALL)
+        if not m:
+            record_fail("could not extract a python code block from SKILL.md")
+        else:
+            snippet = m.group(1)
+            env = os.environ.copy()
+            env["PLUGIN_ROOT"] = str(PLUGIN_ROOT)
+            # Also need a loopback ACP_BASE_URL so any eager ACPInbox()
+            # construction that hits the wire during import doesn't
+            # actually try to talk to a server. The smoke doesn't run
+            # any inbox_* methods in the snippet, so this is just
+            # belt-and-braces.
+            env["ACP_BASE_URL"] = base_url
+            env["ACP_TOKEN"] = token or "ci-test-token-xyzzy"
+            proc = subprocess.run(
+                [sys.executable, "-c", snippet],
+                capture_output=True, text=True, timeout=15, env=env,
+            )
+            check(proc.returncode == 0,
+                  f"snippet ran cleanly with PLUGIN_ROOT={PLUGIN_ROOT} "
+                  f"(rc={proc.returncode}, stderr={proc.stderr[:200]!r})")
+            if proc.returncode == 0:
+                # The snippet imports `acp_inbox` and constructs
+                # `ACPInbox()`. Both must succeed silently; a stray
+                # warning that would mask a regression is also surfaced.
+                check("ModuleNotFoundError" not in proc.stderr
+                      and "ImportError" not in proc.stderr,
+                      f"snippet stderr has no import failure "
+                      f"(stderr={proc.stderr[:200]!r})")
+    except Exception as e:
+        record_fail(f"snippet positive run failed: {type(e).__name__}: {e}")
+
+    # --- 26. SKILL.md init snippet fails fast from `python -c` without PLUGIN_ROOT
+    # Companion to Check 25: in the documented failure mode, a `python -c`
+    # caller who forgets to export `PLUGIN_ROOT` must NOT silently fall
+    # through on some half-resolved path. The snippet's `__file__`
+    # fallback raises `NameError` because stdin / `-c` invocations have
+    # no `__file__` binding. This pins the failure mode to the documented
+    # one so a future change that accidentally adds a different fallback
+    # (or swallows the error) breaks this check.
+    print("\n[Check 26] SKILL.md init snippet fails fast from `python -c` without PLUGIN_ROOT")
+    try:
+        skill_md = (PLUGIN_ROOT / "skills" / "acp-inbox-bridge" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        m = re.search(r"```python\n(.*?)```", skill_md, re.DOTALL)
+        if not m:
+            record_fail("could not extract a python code block from SKILL.md")
+        else:
+            snippet = m.group(1)
+            env = os.environ.copy()
+            env.pop("PLUGIN_ROOT", None)
+            env["ACP_BASE_URL"] = base_url
+            env["ACP_TOKEN"] = token or "ci-test-token-xyzzy"
+            proc = subprocess.run(
+                [sys.executable, "-c", snippet],
+                capture_output=True, text=True, timeout=15, env=env,
+            )
+            check(proc.returncode != 0,
+                  f"snippet refused to run without PLUGIN_ROOT "
+                  f"(rc={proc.returncode}, expected non-zero)")
+            if proc.returncode != 0:
+                # The documented failure mode is `NameError: name
+                # '__file__' is not defined` (Python emits this to
+                # stderr). A `ModuleNotFoundError` would be a
+                # different bug (a future change accidentally
+                # resolving plugin_root to a wrong path that happens
+                # to import OK); we want to surface that case as a
+                # fail, not as a silent pass.
+                stderr = proc.stderr
+                is_documented = ("NameError" in stderr
+                                 and "__file__" in stderr)
+                check(is_documented,
+                      f"snippet failure is NameError on __file__ "
+                      f"(stderr={stderr[:300]!r})")
+    except Exception as e:
+        record_fail(f"snippet negative run failed: {type(e).__name__}: {e}")
+
     # --- summary ---------------------------------------------------------
     print()
     print("=" * 64)

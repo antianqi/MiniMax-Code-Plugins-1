@@ -47,8 +47,20 @@ The bundled client at `<plugin_root>/client/_acp_client.py` is the same
 one the mavis-side Skills use. There is **no `ACP_HOME` to set**, no
 external Python SDK to install, and no `sys.path` to mutate. The
 goudan-side wrapper `scripts/acp_inbox.py` resolves the plugin root
-through `$ACP_PLUGIN_ROOT` (set by the Plugin runtime) with a
-`__file__`-based fallback for ad-hoc invocations.
+through the **host-provided `$PLUGIN_ROOT`** (mcode 0.2.4+ sets this
+automatically when the Skill is loaded). The bundled scripts
+themselves also read `$PLUGIN_ROOT` if you prefer to set it
+explicitly, and fall back to `__file__` only when the snippet is
+written into a `.py` file inside the Plugin tree.
+
+> **Note:** this Plugin does **not** inject a custom env var
+> (an earlier draft used `$ACP_PLUGIN_ROOT`, but no runtime actually
+> sets it). Always rely on the portable host variable `$PLUGIN_ROOT`
+> when invoking the Skill from a non-Plugin context, or set
+> `PLUGIN_ROOT=/path/to/openclaw-acp-bridge` before running the
+> snippet. `__file__` is honored as a last-resort fallback for
+> `python some_file.py` invocations and is **not** available in
+> `python -c "..."` or `python <stdin>` contexts.
 
 ### Authentication
 
@@ -71,14 +83,21 @@ and stop; do not retry.
 
 ### Calling the goudan-side wrapper
 
+The Skill is loaded by the Plugin runtime, which sets `$PLUGIN_ROOT`
+to the directory that contains this Plugin's `client/` and `scripts/`.
+The snippet below reads `$PLUGIN_ROOT` directly, falling back to
+`__file__` only when the caller has saved the snippet into a `.py`
+file inside the Plugin tree.
+
 ```python
 import os
 import sys
-# ACP_PLUGIN_ROOT is the directory that contains this Plugin's `client/`.
-# It is set automatically when the Skill is loaded by the Plugin runtime;
-# the `__file__` fallback keeps the snippet working when it is pasted
-# into an ad-hoc Python session.
-_plugin_root = os.environ.get("ACP_PLUGIN_ROOT") or os.path.dirname(
+# `PLUGIN_ROOT` is set by the Plugin runtime (mcode 0.2.4+) and points
+# at the directory that contains this Plugin's `client/` and `scripts/`.
+# The `__file__` fallback is only valid when this snippet lives inside
+# a .py file; `python -c "..."` and `python <stdin>` callers MUST set
+# `PLUGIN_ROOT` themselves.
+_plugin_root = os.environ.get("PLUGIN_ROOT") or os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))
 )
 sys.path.insert(0, os.path.join(_plugin_root, "scripts"))
