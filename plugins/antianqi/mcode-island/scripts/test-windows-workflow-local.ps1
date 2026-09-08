@@ -144,19 +144,17 @@ if ($status.message -notmatch 'ci-pretooluse-test') { throw "Step 3: status.mess
 Write-Host "OK Step 3: hook PreToolUse OK: state=$($status.state) source=$($status.source)"
 Write-Host ""
 
-# --- Step 4: Get-5hUsage via dot-source + matching fixture + token precedence ---
+# --- Step 4: Get-5hUsage via lib dot-source + matching fixture + token precedence ---
 
-Write-Host "--- Step 4: Get-5hUsage via dot-source + matching fixture + token-source precedence ---"
-$psPath = Join-Path $repoRoot 'plugins/antianqi/mcode-island/mcode-status-detect.ps1'
-if (-not (Test-Path $psPath)) { throw "Step 4: $psPath not found" }
+Write-Host "--- Step 4: Get-5hUsage via lib dot-source + matching fixture + token-source precedence ---"
+$libPath = Join-Path $repoRoot 'plugins/antianqi/mcode-island/scripts/lib/Get-5hUsage.ps1'
+if (-not (Test-Path $libPath)) { throw "Step 4: $libPath not found (round-11 lib must exist)" }
 
-# Dot-source with -Once. The file's main loop (line 519-641)
-# runs exactly once and breaks at line 639 when $Once is true.
-# On that one iteration Get-5hUsage is called from
-# Refresh-5hUsage (line 609), but $script:plan5hToken is still
-# null at that point (this step sets it later), so the call
-# returns $null at line 419 without touching the network.
-. $psPath -Once
+# Dot-source the lib (NOT the full detector). The lib is
+# self-contained: Get-5hUsage + URL/host constants, no
+# mcode-install-root check, no main loop. Mirrors the
+# .github/workflows/mcode-island-windows.yml step 4 1:1.
+. $libPath
 
 $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
 $probe.Start()
@@ -164,18 +162,20 @@ $freePort = [int]$probe.LocalEndpoint.Port
 $probe.Stop()
 Write-Host "Free port: $freePort"
 
-# Redirect the module-scope $PLAN_API_HOST to our mock. The
-# file's byte-array `_s` helper has already resolved the real
+# Redirect the script-scope $PLAN_API_HOST to our mock. The
+# lib's byte-array `_s` helper has already resolved the real
 # https URL into this var; we reassign to the localhost mock
 # listener. $PLAN_API_PATH stays as /v1/coding_plan/remains.
 $script:PLAN_API_HOST = "http://127.0.0.1:$freePort"
 
-# Fixture body. Field names MATCH what Get-5hUsage actually
-# reads (model_name / current_interval_remaining_percent /
+# Fixture body. Field names MATCH what Get-5hUsage in
+# scripts/lib/Get-5hUsage.ps1 actually reads
+# (model_name / current_interval_remaining_percent /
 # remains_time), NOT the round-5 fixture's (model /
 # remainingPct / resetMs). A future change that breaks the
 # field-name contract will cause Get-5hUsage to return $null
-# at line 432 and fail the assertions below.
+# (the foreach exits without finding `model_name == 'general'`)
+# and fail the assertions below.
 $fixtureBody = '{"model_remains":[{"model_name":"general","current_interval_remaining_percent":84,"remains_time":16200000}]}'
 
 function Run-MockOneRequest {
@@ -226,8 +226,8 @@ try {
 }
 
 # Test b: env vars cleared, only config.json. Re-derive
-# $script:plan5hToken from config.json the same way the file's
-# top-level init does (line 124-125). Get-5hUsage must pick
+# $script:plan5hToken from config.json the same way the
+# detector's top-level init does. Get-5hUsage must pick
 # up the config.json token.
 $cfgDir = Join-Path $apphome 'mcode-island'
 if (-not (Test-Path $cfgDir)) { New-Item -ItemType Directory -Path $cfgDir -Force | Out-Null }
@@ -258,10 +258,11 @@ try {
 }
 
 # Test c: no token anywhere -> Get-5hUsage returns `$null`
-# at line 419 without hitting the network. We don't even
-# need a mock listener for this test; if Get-5hUsage
-# returns `$null` immediately, the listener would not be
-# contacted.
+# immediately (the function's first guard at the top of
+# scripts/lib/Get-5hUsage.ps1) without hitting the network.
+# We don't even need a mock listener for this test; if
+# Get-5hUsage returns `$null` immediately, the listener
+# would not be contacted.
 Remove-Item (Join-Path $cfgDir 'config.json') -Force -ErrorAction SilentlyContinue
 $script:plan5hToken = $null
 $data = Get-5hUsage

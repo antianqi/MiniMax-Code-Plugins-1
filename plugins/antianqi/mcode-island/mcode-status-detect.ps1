@@ -112,8 +112,14 @@ $cfgFile    = Join-Path $configDir 'config.json'
 
 # 5h 用量 API：每 60s 调一次 minimax /v1/coding_plan/remains，写进 status.json 的 usage5h 字段
 # token 来源：env MINIMAX_OAUTH_TOKEN 优先；fallback 到 config.json 的 planApiToken
-$PLAN_API_HOST = _s (0x68,0x74,0x74,0x70,0x73,0x3A,0x2F,0x2F,0x61,0x70,0x69,0x2E,0x6D,0x69,0x6E,0x69,0x6D,0x61,0x78,0x69,0x2E,0x63,0x6F,0x6D)
-$PLAN_API_PATH = _s (0x2F,0x76,0x31,0x2F,0x63,0x6F,0x64,0x69,0x6E,0x67,0x5F,0x70,0x6C,0x61,0x6E,0x2F,0x72,0x65,0x6D,0x61,0x69,0x6E,0x73)  # /v1/coding_plan/remains
+#
+# The actual API call (Get-5hUsage) and the URL/host constants live
+# in scripts/lib/Get-5hUsage.ps1. They are extracted into a lib so
+# the windows-latest CI job (and the local runner) can exercise the
+# 5h usage path against a mocked listener without requiring a real
+# mcode install on the runner. Dot-source the lib here so the
+# main loop's Refresh-5hUsage can call Get-5hUsage directly.
+. "$PSScriptRoot/scripts/lib/Get-5hUsage.ps1"
 $PLAN_API_TTL  = [TimeSpan]::FromSeconds(60)
 $script:plan5hToken = $null
 if ($env:MINIMAX_OAUTH_TOKEN) { $script:plan5hToken = $env:MINIMAX_OAUTH_TOKEN }
@@ -413,38 +419,14 @@ function Write-Status($state, $message) {
   Move-Item -Path $tmp -Destination $statusFile -Force
 }
 
-# 5h 用量：调 minimax /v1/coding_plan/remains，返回 general model 的 {remainingPct, resetMs}
-# 无 token / 网络错 / 解析错 → 返回 $null
-function Get-5hUsage {
-  if (-not $script:plan5hToken) { return $null }
-  try {
-    # PowerShell 5.1 在某些 Windows 上默认 TLS 1.0；强制 1.2 避免握手失败
-    if ([System.Net.ServicePointManager]::SecurityProtocol -notmatch 'Tls12') {
-      [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
-    }
-    $url = $PLAN_API_HOST + $PLAN_API_PATH
-    $headers = @{
-      'Authorization' = "Bearer $($script:plan5hToken)"
-      'MM-API-Source' = _s (0x4D,0x69,0x6E,0x69,0x6D,0x61,0x78,0x2D,0x4D,0x43,0x50)  # Minimax-MCP
-    }
-    $resp = Invoke-RestMethod -Uri $url -Headers $headers -TimeoutSec 8 -Method Get -ErrorAction Stop
-    if (-not $resp -or -not $resp.model_remains) { return $null }
-    foreach ($m in @($resp.model_remains)) {
-      if ($m.model_name -eq 'general') {
-        $remPct = [int]$m.current_interval_remaining_percent
-        if ($remPct -lt 0)   { $remPct = 0 }
-        if ($remPct -gt 100) { $remPct = 100 }
-        $resetMs = [int]$m.remains_time
-        if ($resetMs -lt 0)  { $resetMs = 0 }
-        return @{ remainingPct = $remPct; resetMs = $resetMs }
-      }
-    }
-    return $null
-  } catch {
-    Log-Line ("5h usage fetch failed: " + $_.Exception.Message)
-    return $null
-  }
-}
+# Get-5hUsage 现在定义在 scripts/lib/Get-5hUsage.ps1（detector 顶部 dot-source 了它）.
+# 抽到 lib 是为了让 windows-latest CI 能在不装 mcode 的 runner 上跑 5h usage
+# 路径（之前 round-9 直接 dot-source 本文件，主循环 init 的 install-root 检查
+# 会在 CI 上炸 "Cannot find mcode install root"）。
+#
+# 字段名契约：fixture 用 model_name / current_interval_remaining_percent /
+# remains_time（与 lib 的实现一致）。如果实现字段回归，CI step 4 会因为
+# Get-5hUsage 返 null 而 fail。
 
 # 在主循环里每 60s 调一次（用 TTL 守门，单线程安全）
 function Refresh-5hUsage {

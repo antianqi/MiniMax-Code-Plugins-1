@@ -311,6 +311,33 @@ const main = async () => {
         out('PASS', '_lib.ps1: shared helper present');
     }
 
+    // 5d. The 5h-usage lib must exist (round-11 refactor). The
+    // detector dot-sources it at the top of its init block, AND
+    // .github/workflows/mcode-island-windows.yml step 4 dot-sources
+    // it on a CI runner that has no mcode installed. A missing
+    // lib breaks both: the detector silently no-ops (the
+    // dot-source line throws "is not recognized" in strict mode,
+    // or the function just does not exist) and the CI step 4
+    // fails with "term 'Get-5hUsage' is not recognized". Either
+    // way, this smoke FAIL surfaces the regression before the
+    // PR is submitted.
+    const usageLibPath = join(PLUGIN_ROOT, 'scripts', 'lib', 'Get-5hUsage.ps1');
+    if (!(await exists(usageLibPath))) {
+        out('FAIL', 'scripts/lib/Get-5hUsage.ps1 missing (round-11 lib required by detector and CI step 4)');
+    } else {
+        const usageLib = await readFile(usageLibPath, 'utf8');
+        if (!usageLib.includes('function Get-5hUsage')) {
+            out('FAIL', 'scripts/lib/Get-5hUsage.ps1: function Get-5hUsage not found');
+        } else {
+            out('PASS', 'scripts/lib/Get-5hUsage.ps1: function Get-5hUsage present');
+        }
+        if (!/\$PLAN_API_HOST\s*=/.test(usageLib) || !/\$PLAN_API_PATH\s*=/.test(usageLib)) {
+            out('FAIL', 'scripts/lib/Get-5hUsage.ps1: $PLAN_API_HOST or $PLAN_API_PATH constant missing');
+        } else {
+            out('PASS', 'scripts/lib/Get-5hUsage.ps1: URL constants present');
+        }
+    }
+
     // 5b. Drift lock: permission-request.ps1 must emit `{"decision":"ask"}`,
     // not `allow` or `deny`. The 0.2.4 Runtime default for PermissionRequest
     // is fail-closed; an observer Hook that returns `allow` or `deny`
@@ -391,6 +418,28 @@ const main = async () => {
             }
         }
         if (bad === 0) out('PASS', `${fname}: no hardcoded host paths`);
+    }
+
+    // 6b. Same scan for the round-11 5h-usage lib. The byte-array
+    //     obfuscation in the lib (PS 5.1 parser-quirk defense) does
+    //     NOT contain any host paths, but a future refactor that
+    //     "tidies" the lib into a literal `'https://api.minimax.com'`
+    //     string would still need to pass this scan, since the URL
+    //     is the production endpoint and is intentionally obfuscated.
+    const usageLibAbs = join(PLUGIN_ROOT, 'scripts', 'lib', 'Get-5hUsage.ps1');
+    if (await exists(usageLibAbs)) {
+        const text = await readFile(usageLibAbs, 'utf8');
+        const lines = text.split(/\r?\n/);
+        let bad = 0;
+        for (const [i, line] of lines.entries()) {
+            if (/^\s*#/.test(line)) continue;
+            const m = line.match(/(^|[^$])(\/Users\/|\/home\/|[A-Za-z]:\\[^$]*|\/mnt\/[^$\s]*)/);
+            if (m) {
+                out('FAIL', `Get-5hUsage.ps1:${i+1}: hardcoded host path "${m[2].trim()}"`);
+                bad++;
+            }
+        }
+        if (bad === 0) out('PASS', 'Get-5hUsage.ps1: no hardcoded host paths');
     }
 
     finish();

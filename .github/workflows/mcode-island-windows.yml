@@ -217,7 +217,8 @@ jobs:
 
       # 4) Get-5hUsage via dot-source + matching fixture + token
       #    source precedence (amszuidas round-8 P2 fix on
-      #    2026-09-07T03:17:02Z, head 812dd29).
+      #    2026-09-07T03:17:02Z, head 812dd29; round-11
+      #    refactor: dot-source the lib, not the full detector).
       #
       #    Round-5 step 4 (this step's predecessor) reconstructed
       #    the URL and headers by hand and called Invoke-RestMethod
@@ -226,34 +227,36 @@ jobs:
       #    vs model_name/current_interval_remaining_percent/remains_time).
       #    That meant: a future change to the implementation's
       #    field-name contract would NOT fail this CI step, because
-      #    the CI step never went through the implementation. This
-      #    round-9 step fixes that by dot-sourcing the file with
-      #    -Once (so the main loop runs exactly once and breaks,
-      #    per the `$Once` switch in the file) and then calling
-      #    `Get-5hUsage` directly. The mock server returns a
-      #    payload with the SAME field names the implementation
-      #    reads, so a future field-name regression will produce
-      #    `null` here and fail the assertion. Token-source
-      #    precedence is covered by three sub-tests: env-var wins
-      #    over config.json, config.json alone works, no token
-      #    returns $null.
+      #    the CI step never went through the implementation. The
+      #    round-9 fix dot-sourced the full detector with `-Once`
+      #    so `Get-5hUsage` ran for real. That regressed in CI
+      #    (run 34139430883): the detector's top-level init
+      #    requires mcode to be installed (`Find-McodeRoot` exits
+      #    2 if no `.minimax-code` is found), and a github-hosted
+      #    windows-latest runner has no mcode. Round-11 extracts
+      #    `Get-5hUsage` + its URL constants into
+      #    `plugins/antianqi/mcode-island/scripts/lib/Get-5hUsage.ps1`,
+      #    a self-contained module with no mcode-install-root
+      #    dependency. This step dot-sources the lib directly.
       #
-      #    Dot-sourcing -Once: the file's main loop
-      #    (line 519-641) is wrapped in `if (-not $Once) { ... }`
-      #    for the pidFile write, and the inner `while ($true)`
-      #    breaks on the first iteration when `$Once` is true
-      #    (line 639). On that one iteration `Get-5hUsage` is
-      #    called from `Refresh-5hUsage` (line 609), but
-      #    `$script:plan5hToken` is still null at that point
-      #    (this step sets it just before calling
-      #    `Get-5hUsage` below), so the call returns $null at
-      #    line 419 without touching the network. The single
-      #    loop iteration also writes `$APPDATA/mcode-island/status.json`
-      #    via `Write-Status`, which is fine: the isolated
-      #    APPDATA from step 2 is in $env:APPDATA, so the
-      #    write goes to the runner temp, not the real
-      #    machine's APPDATA.
-      - name: Get-5hUsage via dot-source + matching fixture + token-source precedence (round-8 P2 fix)
+      #    Negative-injection: any of the following will fail this
+      #    step and surface in CI before the PR can be merged.
+      #      - lib file deleted          -> `Get-5hUsage` is
+      #                                    not recognized
+      #      - URL byte-array corrupted  -> mock receives wrong
+      #                                    path (test a asserts
+      #                                    path = '/v1/coding_plan/remains')
+      #      - field-name regression     -> fixture returns wrong
+      #                                    field names, function
+      #                                    returns $null (test a
+      #                                    asserts remainingPct=84)
+      #      - $PLAN_API_HOST redirect
+      #        removed in this step     -> mock never gets a
+      #                                    request, listener
+      #                                    times out (test a
+      #                                    asserts listener
+      #                                    completed)
+      - name: Get-5hUsage via lib dot-source + matching fixture + token-source precedence (round-11 refactor)
         env:
           FAKE_TOKEN: 'ci-fake-oauth-token-1234567890abcdef'
         run: |
@@ -261,13 +264,15 @@ jobs:
           $OutputEncoding = [System.Text.Encoding]::UTF8
           try { chcp 65001 | Out-Null } catch {}
 
-          $psPath = 'plugins/antianqi/mcode-island/mcode-status-detect.ps1'
-          if (-not (Test-Path $psPath)) { throw "$psPath not found" }
-
-          # Dot-source with -Once: imports all functions, the
-          # main loop runs once and breaks (line 639 in
-          # mcode-status-detect.ps1).
-          . $psPath -Once
+          # Dot-source the lib (NOT the full detector). The lib is
+          # self-contained: Get-5hUsage + URL/host constants, no
+          # mcode-install-root check, no main loop. CI runners do
+          # not have mcode installed; the full detector would fail
+          # at the install-root check. See the file's header comment
+          # for the design rationale.
+          $libPath = 'plugins/antianqi/mcode-island/scripts/lib/Get-5hUsage.ps1'
+          if (-not (Test-Path $libPath)) { throw "$libPath not found (round-11 lib must exist)" }
+          . $libPath
 
           # Pick a free port for the mock listener.
           $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
@@ -276,8 +281,8 @@ jobs:
           $probe.Stop()
           Write-Host "Picked free port: $freePort"
 
-          # Redirect the module-scope $PLAN_API_HOST to our
-          # mock. The file's byte-array `_s` helper has already
+          # Redirect the script-scope $PLAN_API_HOST to our
+          # mock. The lib's byte-array `_s` helper has already
           # resolved the real https URL into this var; we
           # reassign to the localhost mock listener. $PLAN_API_PATH
           # stays as /v1/coding_plan/remains, which is the
@@ -285,11 +290,13 @@ jobs:
           $script:PLAN_API_HOST = "http://127.0.0.1:$freePort"
 
           # Fixture body. Field names MATCH what Get-5hUsage
-          # actually reads (model_name / current_interval_remaining_percent
-          # / remains_time), NOT the round-5 fixture's
+          # in scripts/lib/Get-5hUsage.ps1 actually reads
+          # (model_name / current_interval_remaining_percent /
+          # remains_time), NOT the round-5 fixture's
           # (model / remainingPct / resetMs). A future change
           # that breaks the field-name contract will cause the
-          # function to return $null at line 432 and fail the
+          # function to return $null (the foreach exits without
+          # finding `model_name == 'general'`) and fail the
           # assertion below.
           $fixtureBody = '{"model_remains":[{"model_name":"general","current_interval_remaining_percent":84,"remains_time":16200000}]}'
 
