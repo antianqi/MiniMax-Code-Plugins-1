@@ -1,6 +1,12 @@
 ---
 name: comfyui-drama
-description: Generate a complete short drama video from a storyboard. Use this Skill for scenarios 5–6 from `comfyui-studio`'s trigger index: 5=首帧 (drama first frame, two-character LoRA + prompt → 16:9 still) and 6=出片 (image-to-video, first frame + motion prompt → MP4 clip). The Skill also describes the full 7-stage pipeline around them (storyboard → TTS → script refinement → first frame → image-to-video → subtitle burn → audio/video assembly). Ships two preset workflow templates: `workflows/drama-first-frame.json` and `workflows/drama-image-to-video.json`.
+description: >-
+  Generate a complete short drama video from a storyboard. Use this Skill for scenarios 5–6 from
+  `comfyui-studio`'s trigger index: 5=首帧 (drama first frame, two-character LoRA + prompt → 16:9
+  still) and 6=出片 (image-to-video, first frame + motion prompt → MP4 clip). The Skill also describes
+  the full 7-stage pipeline around them (storyboard → TTS → script refinement → first frame →
+  image-to-video → subtitle burn → audio/video assembly). Ships two preset workflow templates:
+  `workflows/drama-first-frame.json` and `workflows/drama-image-to-video.json`.
 ---
 
 # ComfyUI Drama

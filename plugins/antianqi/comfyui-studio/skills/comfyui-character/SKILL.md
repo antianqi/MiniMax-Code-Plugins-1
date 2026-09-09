@@ -1,6 +1,12 @@
 ---
 name: comfyui-character
-description: Produce consistent character images and reference-driven edits inside ComfyUI. Use this Skill for scenarios 1–4 from `comfyui-studio`'s trigger index: 1=生图 (selfie from text), 2=模仿 (mimic a reference image), 3=改图 (Flux.2 Klein single-image edit), 4=融合 (Flux.2 Klein dual-image fuse). Ships four preset workflow templates: `workflows/selfie-text-to-image.json`, `workflows/selfie-mimicry.json`, `workflows/flux2-klein-image-edit.json`, `workflows/flux2-klein-image-edit-dual.json`.
+description: >-
+  Produce consistent character images and reference-driven edits inside ComfyUI. Use this Skill for
+  scenarios 1–4 from `comfyui-studio`'s trigger index: 1=生图 (selfie from text), 2=模仿 (mimic a
+  reference image), 3=改图 (Flux.2 Klein single-image edit), 4=融合 (Flux.2 Klein dual-image fuse).
+  Ships four preset workflow templates: `workflows/selfie-text-to-image.json`,
+  `workflows/selfie-mimicry.json`, `workflows/flux2-klein-image-edit.json`,
+  `workflows/flux2-klein-image-edit-dual.json`.
 ---
 
 # ComfyUI Character
