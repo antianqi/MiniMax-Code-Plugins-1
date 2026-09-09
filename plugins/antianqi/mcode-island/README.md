@@ -25,42 +25,44 @@ visible at a glance, without forcing the user to switch back.
 
 ## How the pill is driven
 
-`mcode-island` v0.3.0 supports two modes. The widget behaves the same in
+`mcode-island` v0.4.0 supports two modes. The widget behaves the same in
 both — what changes is who decides the state.
 
-### Mode A — Hook-driven (mcode 0.2.4+ with `io.minimax.mcode`)
+### Mode A — Hook-driven (mcode 0.3.10+ with `io.minimax.mcode`)
 
-mcode 0.2.4 ships a `io.minimax.mcode` client-extension namespace for
+mcode 0.3.10 ships a `io.minimax.mcode` client-extension namespace for
 lifecycle Hooks. When the registry accepts it (companion proposal:
-[`MiniMax-Code-Plugins` PR #20](https://github.com/MiniMax-AI/MiniMax-Code-Plugins/pull/20)),
+[`MiniMax-Code-Plugins` PR #36](https://github.com/MiniMax-AI/MiniMax-Code-Plugins/pull/36),
+the 0.3.10-runtime-compat follow-up to the original
+[PR #20](https://github.com/MiniMax-AI/MiniMax-Code-Plugins/pull/20)),
 the runtime spawns a script from this plugin for every matching event:
 
-| event             | pill state  | script                          | 0.2.4 dispatch |
-| ----------------- | ----------- | ------------------------------- | -------------- |
-| `SessionStart`    | `idle`      | `session-start.ps1`             | yes            |
-| `SessionEnd`      | `idle`      | `session-end.ps1`               | yes            |
-| `UserPromptSubmit`| `thinking`  | `user-prompt-submit.ps1`        | yes            |
-| `PreToolUse`      | `working`   | `pre-tool-use.ps1`              | yes            |
-| `PostToolUse`     | `done`/`error` | `post-tool-use.ps1`          | yes            |
-| `Stop`            | `done`      | `stop.ps1`                      | **forward** — see below |
-| `PreCompact`      | `thinking`  | `pre-compact.ps1`               | **forward** — see below |
-| `Notification`    | `idle`      | `notification.ps1`              | **forward** — see below |
-| `SubagentStart`   | `working` (CODEX only) | `subagent-start.ps1` | **forward** — see below |
-| `SubagentStop`    | `done` (CODEX only)    | `subagent-stop.ps1`  | **forward** — see below |
-| `PermissionRequest`| `waiting`  | `permission-request.ps1`        | **forward** — see below |
-| `PermissionDenied`| `error`     | `permission-denied.ps1`         | **forward** — see below |
+| event             | pill state  | script                          | 0.3.10 dispatch |
+| ----------------- | ----------- | ------------------------------- | --------------- |
+| `SessionStart`    | `idle`      | `session-start.ps1`             | yes (`Fwe` set) |
+| `SessionEnd`      | `idle`      | `session-end.ps1`               | yes (`Fwe` set) |
+| `UserPromptSubmit`| `thinking`  | `user-prompt-submit.ps1`        | yes (`Fwe` set) |
+| `PreToolUse`      | `working`   | `pre-tool-use.ps1`              | yes (`Fwe` set) |
+| `PostToolUse`     | `done`/`error` | `post-tool-use.ps1`          | yes (`Fwe` set) |
+| `Stop`            | `done`      | `stop.ps1`                      | **forward** — not in 0.3.10 `Fwe` set |
+| `PreCompact`      | `thinking`  | `pre-compact.ps1`               | **forward** — not in 0.3.10 `Fwe` set |
+| `Notification`    | `idle`      | `notification.ps1`              | **forward** — not in 0.3.10 `Fwe` set |
+| `SubagentStart`   | `working` (CODEX only) | `subagent-start.ps1` | **forward** — not in 0.3.10 `Fwe` set |
+| `SubagentStop`    | `done` (CODEX only)    | `subagent-stop.ps1`  | **forward** — not in 0.3.10 `Fwe` set |
+| `PermissionRequest`| `waiting`  | `permission-request.ps1`        | **forward** — not in 0.3.10 `Fwe` set |
+| `PermissionDenied`| `error`     | `permission-denied.ps1`         | **forward** — not in 0.3.10 `Fwe` set |
 
 **Forward events (7 of 12):** the spec reserves these in
 `proposals/hooks-detailed-spec.md` and this plugin ships a script for
-each, but the mcode 0.2.4 runtime allowlist (`Wso` set in
-`@minimax-ai/code@0.2.4`) does not yet dispatch them. The 0.2.4
-runtime treats unknown event names as no-op. Once a future mcode
-release adds the dispatch, the same `.ps1` files start firing without
-any code change here. The smoke test
+each, but the mcode 0.3.10 runtime allowlist (`Fwe` set in
+`@minimax-ai/code@0.3.10`, `chunk-CTHP2I62.js:1843`) does not yet dispatch
+them. The 0.3.10 runtime treats unknown event names as no-op. Once a
+future mcode release adds the dispatch, the same `.ps1` files start firing
+without any code change here. The smoke test
 (`scripts/smoke.mjs`) tags these as `WARN` rather than `FAIL` for that
 reason — the **plugin is correct, the runtime is not yet ready**.
 
-If you need any of these events on 0.2.4 today, the supported fallback
+If you need any of these events on 0.3.10 today, the supported fallback
 is to call `notify-island.ps1` from the agent (Mode B) at the moment
 you would otherwise rely on the event firing. The wrapper
 `wrap-tool.ps1` covers the `Bash` path automatically.
@@ -160,23 +162,33 @@ alternative:
 
 1. **Install** — copy this folder into your `~/.minimax/plugins/mcode-island/`
    (or any directory you want; the scripts only need to live together).
-2. **Start the widget**:
+2. **(Mode A only) Materialise the hook document** — the 0.3.10 runtime
+   reads `${MINIMAX_DATA_DIR}/hooks/hooks.json`, not the Plugin's own
+   `io.minimax.mcode/` path. Run once after install (and after every mcode
+   upgrade that changes the bundled document):
+   ```powershell
+   & "%PLUGIN_DIR%\mcode-island\install-hook.ps1"            # project-wide
+   & "%PLUGIN_DIR%\mcode-island\install-hook.ps1" -Agent mavis  # per-agent
+   ```
+   This is idempotent. Pass `-DataDir <path>` to override
+   `${MINIMAX_DATA_DIR}` when the env var is not set.
+3. **Start the widget**:
    ```cmd
    mcode-island.cmd start
    ```
    You should see a small dark pill appear at the top center of the screen.
-3. **Test a state push** from a new terminal:
+4. **Test a state push** from a new terminal:
    ```powershell
    & "%PLUGIN_DIR%\mcode-island\notify-island.ps1" -State working -Message "demo"
    ```
    The pill should turn blue and pulse for as long as you don't push another state.
-4. **Enable logon auto-start** (optional):
+5. **Enable logon auto-start** (optional):
    ```powershell
    & "%PLUGIN_DIR%\mcode-island\autostart.ps1" -Action Enable
    ```
    This writes to `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. No
    admin rights required.
-5. **Stop when done**:
+6. **Stop when done**:
    ```cmd
    mcode-island.cmd stop
    ```
@@ -185,7 +197,7 @@ alternative:
 
 ```
 mcode-island/
-├── plugin.json                       # plugin manifest (official 1.0 schema)
+├── plugin.json                       # plugin manifest (v0.4.0, official 1.0 schema)
 ├── README.md                         # this file
 ├── LICENSE                           # Apache-2.0
 ├── mcode-island.ps1                  # WPF widget main loop
@@ -196,6 +208,7 @@ mcode-island/
 ├── show-island.ps1                   # re-raise hidden widget
 ├── pin-island.ps1                    # lock click-to-focus target
 ├── autostart.ps1                     # register / unregister Windows logon
+├── install-hook.ps1                  # Mode A: copy hooks.json into ${MINIMAX_DATA_DIR}
 ├── notify-island.ps1                 # state-push helper (Mode B)
 ├── wrap-tool.ps1                     # all-in-one bash wrapper
 ├── mcode-status-detect.ps1           # runtime-state detector (Mode B fallback)
@@ -230,7 +243,7 @@ binary, no symlink, no `node_modules`.
 | Windows           | 10 1809+ or 11 (uses WPF, `user32` `kernel32`)        |
 | PowerShell        | 5.1 (ships with Windows 10/11) or PowerShell 7        |
 | .NET WPF runtime  | 4.x (ships with Windows 10/11)                        |
-| mcode             | any version (Mode B works everywhere); 0.2.4+ activates Mode A |
+| mcode             | any version (Mode B works everywhere); 0.3.10+ activates Mode A (with the Windows caveat below) |
 | execution policy  | `Bypass` for this directory; not changed globally    |
 | network access    | **optional** — see "Network access" below. The widget itself is offline. `mcode-status-detect.ps1` only contacts `https://api.minimax.io/v1/coding_plan/remains` when a token is configured (see "Accounts" + "Data use"). |
 | accounts          | **optional** — see "Accounts" below. No account is required to run the widget; a token is only needed if you want the optional 5-hour usage readout in the pill. |
@@ -363,9 +376,22 @@ a live MiniMax Code session. Empirical evidence (captured during development):
   writer and never misses an event.
 - Mode A (Hook-driven) requires the registry validator to accept the
   `io.minimax.mcode` client-extension namespace. The companion proposal
-  ([`MiniMax-Code-Plugins` PR #20](https://github.com/MiniMax-AI/MiniMax-Code-Plugins/pull/20))
-  is still pending merge; until then, the `io.minimax.mcode/hooks/` directory
-  is dormant and the widget runs in Mode B (agent-pushed + detector).
+  was rewritten for the 0.3.10 nested schema in
+  [`MiniMax-Code-Plugins` PR #36](https://github.com/MiniMax-AI/MiniMax-Code-Plugins/pull/36)
+  (follow-up to the original
+  [PR #20](https://github.com/MiniMax-AI/MiniMax-Code-Plugins/pull/20));
+  until the registry accepts the namespace, the `io.minimax.mcode/hooks/`
+  directory is dormant and the widget runs in Mode B.
+- On mcode 0.3.10 only 5 / 12 events dispatch
+  (`SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`,
+  `PostToolUse`); the other 7 are forward-only — the `.ps1` files ship
+  and will start firing when a future mcode release grows the `Fwe` set.
+- On Windows 0.3.10 even the 5 dispatched events do not actually fire,
+  because the runtime spawns commands via `/bin/sh -lc` which ENOENTs on
+  a stock Windows install. The hook document is correct and
+  `install-hook.ps1` succeeds, but no script will run until upstream sets
+  `usePlatformShell: true` on Windows. Track the upstream issue; use
+  Mode B in the meantime.
 
 ## Roadmap
 

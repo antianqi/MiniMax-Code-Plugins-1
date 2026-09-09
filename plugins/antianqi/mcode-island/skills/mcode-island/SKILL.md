@@ -1,11 +1,11 @@
 ---
 name: mcode-island
-description: Push the user's terminal out of focus to a Windows desktop Dynamic Island pill so the user can watch your work without switching back to mcode. On mcode 0.2.4+ with the `io.minimax.mcode` Hooks extension enabled (forward-compatible with MiniMax-Code-Plugins PR #20), every tool lifecycle event fires a script under `io.minimax.mcode/hooks/scripts/` automatically — the agent does not need to push states manually. On older mcode or when the extension is not yet active, fall back to calling `notify-island.ps1` before and after each tool call, or use `wrap-tool.ps1` for the bash path.
+description: Push the user's terminal out of focus to a Windows desktop Dynamic Island pill so the user can watch your work without switching back to mcode. On mcode 0.3.10+ with the `io.minimax.mcode` Hooks extension enabled (aligned with MiniMax-Code-Plugins PR #36 nested `{matcher, hooks:[{type, command, timeout}]}` schema), five tool lifecycle events fire scripts under `io.minimax.mcode/hooks/scripts/` automatically — the agent does not need to push states manually. Caveat: on mcode 0.3.10 the runtime spawns commands via `/bin/sh -lc` which ENOENTs on Windows, so Mode A does not actually fire on Windows until the runtime sets `usePlatformShell: true`; until then, fall back to calling `notify-island.ps1` before and after each tool call, or use `wrap-tool.ps1` for the bash path. To make Mode A work as soon as the runtime is fixed on Windows, run `install-hook.ps1` once after install — it copies the bundled `io.minimax.mcode/hooks/hooks.json` into `${MINIMAX_DATA_DIR}/hooks/hooks.json` (or `…/agents/<agent>/hooks/hooks.json`) because the runtime does not read the Plugin's own `io.minimax.mcode/` path.
 license: Apache-2.0
-compatibility: Requires Windows 10/11 with PowerShell 5.1+ and the mcode-island widget running (started via `mcode-island start` or `autostart.ps1 -Enable`). Hook-driven mode additionally requires mcode 0.2.4+ with the `io.minimax.mcode` extension namespace accepted by the registry validator.
+compatibility: Requires Windows 10/11 with PowerShell 5.1+ and the mcode-island widget running (started via `mcode-island start` or `autostart.ps1 -Enable`). Hook-driven mode additionally requires mcode 0.3.10+ with the `io.minimax.mcode` extension namespace accepted by the registry validator, AND `install-hook.ps1` having been run at least once to materialise the hook document in the runtime-resolved dataDir. On Windows 0.3.10, Mode A is currently non-functional due to an upstream `/bin/sh` dispatch bug; use Mode B.
 metadata:
   author: antianqi
-  version: "0.3.0"
+  version: "0.4.0"
 ---
 
 # mcode-island — 桌面灵动岛状态通知
@@ -32,45 +32,91 @@ Click the pill to switch focus back to the originating terminal tab. Run
 
 ## Two ways to drive the pill
 
-### Mode A — Hook-driven (mcode 0.2.4+ with `io.minimax.mcode`)
+### Mode A — Hook-driven (mcode 0.3.10+ with `io.minimax.mcode`)
 
-When mcode accepts the `io.minimax.mcode` client extension, the runtime spawns
-the script under `io.minimax.mcode/hooks/scripts/<event>.ps1` for every matching
-lifecycle event. The agent does **not** need to push state manually.
+When mcode accepts the `io.minimax.mcode` client extension, the runtime parses
+the hook document and spawns the script under
+`io.minimax.mcode/hooks/scripts/<event>.ps1` for every matching lifecycle
+event. The agent does **not** need to push state manually.
 
-| event             | script                            | pill state  |
-| ----------------- | --------------------------------- | ----------- |
-| `SessionStart`    | `session-start.ps1`               | `idle`      |
-| `SessionEnd`      | `session-end.ps1`                 | `idle`      |
-| `UserPromptSubmit`| `user-prompt-submit.ps1`          | `thinking`  |
-| `PreToolUse`      | `pre-tool-use.ps1`                | `working`   |
-| `PostToolUse`     | `post-tool-use.ps1`               | `done`/`error` |
-| `Stop`            | `stop.ps1`                        | `done`      |
-| `PreCompact`      | `pre-compact.ps1`                 | `thinking`  |
-| `Notification`    | `notification.ps1`                | `idle`      |
-| `SubagentStart`   | `subagent-start.ps1` (CODEX only) | `working`   |
-| `SubagentStop`    | `subagent-stop.ps1`  (CODEX only) | `done`      |
-| `PermissionRequest`| `permission-request.ps1` (returns `{"decision":"allow"}` so the runtime's fail-closed default does not deny) | `waiting` |
-| `PermissionDenied`| `permission-denied.ps1`           | `error`     |
+The 0.3.10 hook parser (`Uwe` in `@minimax-ai/code@0.3.10`) expects a **nested
+shape** per event: a top-level `{matcher, hooks:[{type, command, timeout}]}`
+array, not the flat `{command, args, timeout}` shape that earlier plugin
+drafts (PR #20) proposed. The bundled `io.minimax.mcode/hooks/hooks.json`
+matches the 0.3.10 schema; the proposal text in `proposals/hooks-detailed-spec.md`
+was rewritten in PR #36 to match.
 
-The hooks conform to the portable spec proposed in
-`MiniMax-Code-Plugins` PR #20. Each script reads the JSON event payload from
-stdin, calls `notify-island.ps1` with the appropriate state, and exits 0
-(decision-bearing events also write a JSON decision to stdout). Self-push
-filtering prevents the pill from churning when the agent calls
-`notify-island.ps1` directly through Bash.
+| event              | script                            | pill state   | 0.3.10 dispatch |
+| ------------------ | --------------------------------- | ------------ | --------------- |
+| `SessionStart`     | `session-start.ps1`               | `idle`       | yes (`Fwe` set) |
+| `SessionEnd`       | `session-end.ps1`                 | `idle`       | yes (`Fwe` set) |
+| `UserPromptSubmit` | `user-prompt-submit.ps1`          | `thinking`   | yes (`Fwe` set) |
+| `PreToolUse`       | `pre-tool-use.ps1`                | `working`    | yes (`Fwe` set) |
+| `PostToolUse`      | `post-tool-use.ps1`               | `done`/`error` | yes (`Fwe` set) |
+| `Stop`             | `stop.ps1`                        | `done`       | forward — not in 0.3.10 `Fwe` set |
+| `PreCompact`       | `pre-compact.ps1`                 | `thinking`   | forward — not in 0.3.10 `Fwe` set |
+| `Notification`     | `notification.ps1`                | `idle`       | forward — not in 0.3.10 `Fwe` set |
+| `SubagentStart`    | `subagent-start.ps1` (CODEX only) | `working`    | forward — not in 0.3.10 `Fwe` set |
+| `SubagentStop`     | `subagent-stop.ps1`  (CODEX only) | `done`       | forward — not in 0.3.10 `Fwe` set |
+| `PermissionRequest`| `permission-request.ps1` (returns `{"decision":"ask"}` so the runtime's fail-closed default does not deny) | `waiting` | forward — not in 0.3.10 `Fwe` set |
+| `PermissionDenied` | `permission-denied.ps1`           | `error`      | forward — not in 0.3.10 `Fwe` set |
 
-If you are running on mcode 0.2.4+ and the pill is updating itself before you
-push anything, Mode A is active. Otherwise fall through to Mode B.
+**0.3.10 dispatch coverage is 5 / 12 events** — the runtime's `Fwe` set
+allowlists exactly the 5 lifecycle events above plus the three stream events
+(`MessageComplete`, `StreamChunk`, `StreamChunkThreshold`) that this plugin
+does not register. The other 7 events are *forward-only* on 0.3.10: the
+`.ps1` files ship and the JSON is valid, but the runtime silently skips them
+because the event name is outside `Fwe`. When a future mcode release grows
+`Fwe`, those scripts start firing with zero code change here.
+
+Each script reads the JSON event payload from stdin, calls `notify-island.ps1`
+with the appropriate state, and exits 0 (decision-bearing events also write a
+JSON decision to stdout). Self-push filtering prevents the pill from churning
+when the agent calls `notify-island.ps1` directly through Bash.
+
+**The Plugin's `io.minimax.mcode/hooks/hooks.json` alone is not enough.** The
+0.3.10 hook-config parser reads only `${MINIMAX_DATA_DIR}/hooks/hooks.json`
+(project-wide) and `${MINIMAX_DATA_DIR}/agents/<agent>/hooks/hooks.json`
+(per-agent). It does not consult `plugin.json`'s `extensions.io.minimax.mcode.hooks`
+field, even though the Plugin registry accepts the namespace. Run
+`install-hook.ps1` once after install to copy the bundled document into the
+runtime-resolved dataDir (it is idempotent and safe to re-run after every
+mcode upgrade):
+
+```powershell
+& "<plugin install dir>\install-hook.ps1"            # project-wide
+& "<plugin install dir>\install-hook.ps1" -Agent mavis  # per-agent
+```
+
+The script also accepts `-DataDir <path>` to override `${MINIMAX_DATA_DIR}`
+when the env var is not set. It is portable: it does not write any absolute
+path into the document, it uses `%PLUGIN_ROOT%` in the spawned commands so
+that whatever install location the Plugin landed in is the source of truth
+once the runtime learns to read it.
+
+> **Caveat (mcode 0.3.10 on Windows):** the 0.3.10 hook dispatcher
+> (`Ava` in `@minimax-ai/code@0.3.10`, `chunk-CTHP2I62.js:6553263`) spawns
+> commands via `/bin/sh -lc <command>` even on Windows, with
+> `usePlatformShell: false` as the default. `Node.spawn('/bin/sh', ...)`
+> returns `ENOENT` on a stock Windows install (no Git Bash, no MSYS, no WSL
+> shim), so even the 5 events that *would* dispatch will not actually fire
+> on Windows 0.3.10. The hook document is correct and the install step
+> succeeds, but no script will run until upstream sets
+> `usePlatformShell: true` on Windows (or ships a Windows-aware shell
+> wrapper). Track the upstream issue; use Mode B in the meantime.
+
+If you are running on a fixed runtime and the pill is updating itself before
+you push anything, Mode A is active. Otherwise fall through to Mode B.
 
 ### Mode B — Agent-pushed (legacy, always works)
 
 For older mcode, or when the `io.minimax.mcode` extension is not yet active
-(registry validator has not accepted the namespace), the agent pushes state
-through `notify-island.ps1` directly. The `mcode-status-detect.ps1` detector
-also infers state from the runtime's `ledger.jsonl` / `messages.jsonl`, so
-the pill will still move — your manual pushes just sharpen the message and
-cover edge cases (notably `ask_user`).
+(registry validator has not accepted the namespace), or on Windows 0.3.10
+where the runtime's `/bin/sh` spawn is broken, the agent pushes state through
+`notify-island.ps1` directly. The `mcode-status-detect.ps1` detector also
+infers state from the runtime's `ledger.jsonl` / `messages.jsonl`, so the
+pill will still move — your manual pushes just sharpen the message and cover
+edge cases (notably `ask_user`).
 
 | moment                                                | state     | example message                |
 | ----------------------------------------------------- | --------- | ------------------------------ |
@@ -189,7 +235,7 @@ When no token is configured the plugin makes no network requests at all.
 
 ```
 mcode-island/
-├── plugin.json                       # plugin manifest
+├── plugin.json                       # plugin manifest (v0.4.0)
 ├── README.md                         # full user-facing docs
 ├── LICENSE                           # Apache-2.0
 ├── mcode-island.ps1                  # WPF widget main loop
@@ -200,12 +246,13 @@ mcode-island/
 ├── show-island.ps1                   # re-raise hidden widget
 ├── pin-island.ps1                    # lock focus target to foreground
 ├── autostart.ps1                     # register/unregister Windows logon
+├── install-hook.ps1                  # copy hooks.json into ${MINIMAX_DATA_DIR} (Mode A, 0.3.10)
 ├── notify-island.ps1                 # state-push helper (agents call this)
 ├── wrap-tool.ps1                     # all-in-one bash wrapper
 ├── mcode-status-detect.ps1           # runtime-state detector
-├── io.minimax.mcode/                 # client extension (PR #20 spec)
+├── io.minimax.mcode/                 # client extension (PR #36 spec, 0.3.10 nested schema)
 │   └── hooks/
-│       ├── hooks.json                # 12-event declaration
+│       ├── hooks.json                # 12-event nested declaration
 │       └── scripts/
 │           ├── _lib.ps1              # shared helper
 │           ├── session-start.ps1
@@ -228,11 +275,25 @@ mcode-island/
 
 - Windows 10/11 only (uses WPF, `user32`, and `kernel32` P/Invoke).
 - Single widget per user session.
-- Hook-driven mode requires mcode 0.2.4+ Runtime. The portable spec
-  (`io.minimax.mcode` client extension) is still pending merge in
-  `MiniMax-Code-Plugins` PR #20; until the registry validator accepts the
-  namespace, the hooks subdirectory is dormant and the plugin falls back to
-  Mode B (agent-pushed + detector).
+- Hook-driven mode requires mcode 0.3.10+ Runtime. The portable spec
+  (`io.minimax.mcode` client extension) was aligned with the 0.3.10 nested
+  shape in `MiniMax-Code-Plugins` PR #36; until the registry validator
+  accepts the namespace, the hooks subdirectory is dormant and the plugin
+  falls back to Mode B (agent-pushed + detector).
+- On mcode 0.3.10 only 5 / 12 events dispatch (`SessionStart`, `SessionEnd`,
+  `UserPromptSubmit`, `PreToolUse`, `PostToolUse`). The other 7 are forward
+  events that the 0.3.10 `Fwe` set does not yet include; the `.ps1` files
+  ship and will start firing when a future mcode release grows `Fwe`.
+- On Windows 0.3.10, even those 5 events do not actually fire: the runtime
+  spawns commands via `/bin/sh -lc` which ENOENTs on a stock Windows
+  install. The hook document is correct and `install-hook.ps1` succeeds, but
+  no script will run until upstream sets `usePlatformShell: true` on Windows.
+  Track the upstream issue; use Mode B in the meantime.
+- `install-hook.ps1` only materialises the hook document in
+  `${MINIMAX_DATA_DIR}/hooks/hooks.json`. Until the runtime learns to read
+  `plugin.json`'s `extensions.io.minimax.mcode.hooks` field, you must run
+  it once after install (and after every mcode upgrade that changes the
+  bundled document).
 - No hover-expand, no media-control integration yet — see the `v0.2` roadmap in
   the upstream issue tracker.
 - `wrap-tool.ps1` is a **status publisher only** — it never executes the
