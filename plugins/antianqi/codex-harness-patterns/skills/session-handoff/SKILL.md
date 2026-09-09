@@ -1,4 +1,4 @@
-﻿---
+---
 name: session-handoff
 description: |
   At session end, write a structured handoff file so next session can pick up in 30 seconds.
