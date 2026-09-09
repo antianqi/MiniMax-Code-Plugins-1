@@ -6,15 +6,26 @@ description: |
   TRIGGER PHRASES: "session fork", "session branch", "thread fork", "thread rollback", "revert thread", "ThreadRollback", "SuspendTurnAndShutdown", "Op::RecoverTurn", "paginated history", "RolloutLineage", "ForkBoundary", "RolloutReferenceIndex", "ModelContext reconstruction", "ReverseJsonlScanner", "bounded replay", "git baseline", "writer lock", "subagent lineage".
   SKIP WHEN: single-session task state (use `world-state-tracking`), no need to undo, no need to fork.
 license: Apache-2.0
-compatibility: Requires MiniMax Code with Agent Plugins 1.0 support.
+compatibility: Targets MiniMax Code 0.2.4. **Conceptual reference only.** The Rust types (`ThreadHistoryMode` / `RolloutLineageSegment` / `RolloutLineage` / `ForkBoundary` / `PrepareForkParams` / `PreparedFork` / `RevertThreadParams` / `StoredModelContext` / `UpdateProjectParams` / `ReverseJsonlScanner` / `ModelContextScan`), the SQLite CAS on `rollout_path`, the `writer_lock_coordinator`, the `try_claim_global_phase2_job` / `heartbeat_global_phase2_job` lease, the `Op::SuspendTurnAndShutdown` / `Op::RecoverTurn` ops, the `JOB_LEASE_SECONDS` / `GRACEFULL_INTERRUPTION_TIMEOUT_MS` / `MAX_ROLLOUT_LINE_BYTES` constants, the `TaskKind::Regular` / `Feature::Collab` / `PermissionProfile::External` enums, and the `expected_sqlite_path` anchor are all **Codex-internal APIs** (`codex-rs/thread-store/`, `codex-rs/state/src/runtime/recovery.rs`, `codex-rs/state/migrations/0047_rollout_migration_state.sql`). They are **not** part of the mcode 0.2.4 public surface. The mcode 0.2.4 `task` tool returns a `task_id` (string); anything else (`thread_id`, `rollout_id`, sqlite path, lineage segment, ModelContext reconstruction algorithm) is **host-internal**. The Skills below present the Codex reference as conceptual pseudocode; the actual implementation must follow the host's verified APIs.
 metadata:
   author: antianqi
-  version: "0.1.0"
+  version: "0.1.1"
   inspired-by: https://github.com/openai/codex/tree/main/codex-rs/thread-store/ (P-49/50/51/52 + P-67-77)
-  changes-from-v0.0.0: "Initial design distilled from P-49/50/51/52 + P-67-77 deep-dive (Phase 0 错判修正 + Phase 1 Week 3)."
+  changes-from-v0.1.0: "v1.0.5 amendment (PR #33 round-12, hetaoBackend CHANGES_REQUESTED on head 5a4e3fc): the previous body presented the Codex `codex-rs/thread-store/` Rust types and SQLite / `writer_lock_coordinator` / `Op::SuspendTurnAndShutdown` surface as if it were an mcode 0.2.4 design. None of those types are on the mcode public surface; the mcode call shape for sub-agent lifecycle is `task(...)` returning a `task_id` (string). The `compatibility` frontmatter field now states the conceptual-reference nature of the Skill explicitly, and a banner above the Process section reiterates that every Rust block, SQLite CAS anchor, lease helper, and op name is Codex-internal pseudocode."
 ---
 
 # Session Branch / Fork
+
+> **Conceptual reference only.** The mcode 0.2.4 public surface has **no**
+> parameters for session fork / revert / suspend / paginated history /
+> ModelContext reconstruction. The only documented mcode 0.2.4 tool for
+> sub-agent lifecycle is `task(...)`, which returns a `task_id` (string);
+> any deeper structure (`thread_id`, `rollout_id`, sqlite path, lineage
+> segment, ModelContext reconstruction algorithm) is **host-internal**.
+> Every Rust block, SQLite CAS anchor, lease helper, and op name below is
+> **Codex-internal pseudocode** (`codex-rs/thread-store/`), NOT a mcode
+> 0.2.4 design. The actual implementation must follow the host's verified
+> APIs.
 
 Design a session-level fork / revert / recover / suspend system over a paginated
 history. Mirrors `codex-rs/thread-store/`.

@@ -50,9 +50,13 @@ Activate when **any** of these is true:
 
 ## Process
 
-1. **Pick a single, predictable path.** Default:
-   `.minimax/goal/<YYYY-MM-DD>-<short-id>.md`. Different from the world-state file (which is
-   "where we are"; this is "what we are doing").
+1. **Pick a single, predictable path.** **Default (illustrative; actual
+   on-disk path is host-internal):**
+   `<host-goal-root>/<YYYY-MM-DD>-<short-id>.md`. The mcode 0.2.4 public
+   surface does not document a goal file path. The Skills below use
+   `<host-goal-root>` as a conceptual placeholder; the host determines
+   the actual root. Different from the world-state file (which is "where
+   we are"; this is "what we are doing").
 2. **Initialise the goal file** at the start of a non-trivial task, in this exact shape:
 
    ```markdown

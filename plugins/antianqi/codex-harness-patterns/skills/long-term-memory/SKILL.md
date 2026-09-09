@@ -142,6 +142,12 @@ A working long-term memory system should produce:
 ## Example — minimal memory workflow
 
 ```text
+# CONCEPTUAL PSEUDOCODE (Codex reference, codex-rs/memories/) — not
+# the mcode 0.2.4 call shape. The `ephemeral` / `no_collab` /
+# `no_network` / `no_memory_tool` / `redact_secrets` /
+# `deny_unknown_fields` / `phase1::run` / `phase2::run` symbols
+# below are Codex-internal and are NOT mcode 0.2.4 surface.
+
 # At session start
 phase1::run(claimed_jobs)   # parallel, schema-constrained, redacted, leased
 phase2::run(claim_global_lock)  # serial, single global lock

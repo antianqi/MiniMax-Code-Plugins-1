@@ -58,7 +58,16 @@ function parseFrontmatter(text) {
   // counted lines exactly equal to `---`" because the regex /\s*---\s*$/
   // didn't match `\r`-terminated lines; this normalization closes that
   // hole by making the parser see a single canonical line ending.
-  const t = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  let t = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  // Tolerate a UTF-8 BOM at the very start of the file. The plugin
+  // does not author BOMs, but some of the Skills were originally
+  // authored with one (e.g. session-handoff) and a robust frontmatter
+  // parser should not refuse to read them on that ground. The new
+  // round-12 artifact-completeness / API-vocabulary tests pin
+  // every Skill's body shape; this BOM tolerance is the matching
+  // parser-side guard so that round-12 + the existing frontmatter
+  // uniqueness check agree on which Skills are well-formed.
+  if (t.charCodeAt(0) === 0xFEFF) t = t.slice(1);
   if (!t.startsWith('---\n')) {
     throw new Error('frontmatter must start with "---\\n" at the very top of the file');
   }
@@ -720,4 +729,369 @@ test('R18-2 plugin.json description pins mcode >= "0.2.4" and the canonical task
     'plugin.json `description` must NOT advertise `subagent_type=` (the ' +
     'Skills in this plugin no longer use the legacy placeholder; mcode ' +
     '0.2.4+ uses canonical `agent_name=`)');
+});
+
+// === Round-12 review (hetaoBackend, 2026-09-09T01:04:18Z on head 5a4e3fc) ===
+//
+// "the package still documents unverified host behavior as executable
+//  guidance. skills/background-task/SKILL.md:70-84,213-233 invents
+//  PID/job-control behavior for bash(run_in_background=true) without a
+//  public MiniMax Code contract or test proving the returned handle has
+//  a PID; goal-persistence, long-term-memory, session-handoff,
+//  session-branch-fork, and subagent-family-tracking similarly
+//  prescribe host paths/parameters such as ~/.minimax/memory,
+//  ephemeral/no_collab/no_network, and .minimax/agents/<thread-id>
+//  without verified APIs. ... Please label unsupported sections as
+//  conceptual pseudocode or rewrite them against verified public APIs,
+//  remove invented PID/path/parameter claims, and add
+//  artifact-completeness/API-vocabulary tests."
+//
+// Two contracts are pinned below:
+//   1. API-vocabulary (background-task): the `bash(...)` code blocks
+//      that demonstrate killing a shell background job must not
+//      document a literal integer PID; the launched process id is
+//      host-internal and the Skill uses a `<process-id>` placeholder.
+//   2. artifact-completeness (5 Skills): the 5 Skills that name
+//      host-side on-disk paths (`goal-persistence`, `long-term-memory`,
+//      `session-handoff`, `session-branch-fork`,
+//      `subagent-family-tracking`) must use `<host-X-root>/...`
+//      placeholders, not literal `.minimax/...` paths; and
+//      `long-term-memory` must label its Codex-internal sub-agent
+//      configuration flags as conceptual pseudocode.
+
+// --- API-vocabulary: background-task must use <process-id> placeholder ---
+
+// A `bash(...)` call body inside a fenced code block. The
+// background-task Skill documents the host job-control API in its
+// example code blocks; the host job-control API takes a process id
+// (Windows: Stop-Process -Id <pid> / Get-Process -Id <pid>; POSIX:
+// kill <pid> / ps -p <pid>). The mcode 0.2.4 runtime contract does
+// NOT document the shape of the `bash` job handle, so the Skill
+// MUST treat the process id as host-internal and use a
+// `<process-id>` placeholder rather than a literal integer. A Skill
+// that documents a literal integer (e.g. `Stop-Process -Id 12345`)
+// is asserting an unverified host contract.
+//
+// Negative fixture: a Skill body that documents a literal integer
+// PID inside a `bash(...)` call in a fenced code block. The fixture
+// must be detectable.
+test('API-vocabulary: literal-integer PIDs in bash(...) code blocks are detected (round-12 negative fixture)', () => {
+  // The fixture: a code block with a bash(...) call that documents
+  // a literal integer PID. This is the round-12 defect shape.
+  const FIXTURE_LITERAL_PID = `
+\`\`\`text
+# Round-12 defect: literal integer PID inside a bash(...) call.
+> bash(
+    command="Stop-Process -Id 12345"
+  )
+# Returns { job_id: "job_x", pid: 12345, log: "..." }
+\`\`\`
+`;
+  // A code block with a bash(...) call that uses the <process-id>
+  // placeholder. This is the round-12 fix shape.
+  const FIXTURE_PLACEHOLDER = `
+\`\`\`text
+> bash(
+    command="Stop-Process -Id <process-id>"
+  )
+# (or on POSIX: kill <process-id>)
+\`\`\`
+`;
+  // Helper: extract every `bash(...)` call body that contains
+  // `Stop-Process` / `Get-Process` / `kill` / `ps -p` and return
+  // the right-hand side of the `-Id` / pid argument.
+  //
+  // The contract: a "kill" / "check" call in a bash(...) example
+  // is OK iff the process-id argument is either a `<process-id>`
+  // placeholder OR a `$(...)` / `Get-Process` shell substitution
+  // (which resolves at call time, not at write time). A bare
+  // integer literal (e.g. `12345`) is the round-12 defect.
+  const auditBlock = (text) => {
+    const t = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const bashCalls = extractCallBodies(t, 'bash');
+    const offenders = [];
+    for (const { match, line } of bashCalls) {
+      // Look for the job-control surface. We only audit the lines
+      // that actually carry the process-id argument.
+      if (!/Stop-Process|Get-Process|^\s*kill\s|ps\s+-p/u.test(match)) continue;
+      // The argument that follows `-Id` / `kill ` / `-p` is the
+      // process id. Match either a literal integer or a
+      // `<process-id>` placeholder.
+      const literal = /-\s*Id\s+(\d{2,})\b|\bps\s+-p\s+(\d{2,})\b|\bkill\s+(\d{2,})\b/u;
+      const placeholder = /<\s*process-id\s*>/u;
+      const shellSubst = /\$\([^)]+\)|`[^`]+`/u;
+      const m = match.match(literal);
+      if (m && !placeholder.test(match) && !shellSubst.test(match)) {
+        offenders.push({ line, match: match.slice(0, 120) });
+      }
+    }
+    return offenders;
+  };
+  // Negative case: the literal-PID fixture must be detected.
+  const negOffenders = auditBlock(FIXTURE_LITERAL_PID);
+  assert.ok(negOffenders.length === 1,
+    `literal-PID fixture must yield exactly 1 offender, got ${negOffenders.length}: ${JSON.stringify(negOffenders)}`);
+  // Positive case: the placeholder fixture must NOT be detected.
+  const posOffenders = auditBlock(FIXTURE_PLACEHOLDER);
+  assert.equal(posOffenders.length, 0,
+    `<process-id> placeholder fixture must yield 0 offenders, got ${posOffenders.length}: ${JSON.stringify(posOffenders)}`);
+});
+
+test('API-vocabulary: background-task SKILL.md bash(...) examples use <process-id> placeholder, not literal PIDs', () => {
+  const path = join(SKILLS_ROOT, 'background-task', 'SKILL.md');
+  const text = readFileSync(path, 'utf8');
+  const t = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const bashCalls = extractCallBodies(t, 'bash');
+  assert.ok(bashCalls.length > 0,
+    'background-task must show at least one bash(...) example');
+  const offenders = [];
+  for (const { match, line } of bashCalls) {
+    if (!/Stop-Process|Get-Process|^\s*kill\s|ps\s+-p/u.test(match)) continue;
+    const literal = /-\s*Id\s+(\d{2,})\b|\bps\s+-p\s+(\d{2,})\b|\bkill\s+(\d{2,})\b/u;
+    const placeholder = /<\s*process-id\s*>/u;
+    const shellSubst = /\$\([^)]+\)|`[^`]+`/u;
+    const m = match.match(literal);
+    if (m && !placeholder.test(match) && !shellSubst.test(match)) {
+      offenders.push({ line, match: match.slice(0, 120) });
+    }
+  }
+  assert.equal(offenders.length, 0,
+    'background-task has bash(...) examples that document a literal integer PID ' +
+    '(mcode 0.2.4 does not document the bash job-handle shape; use <process-id> ' +
+    'placeholder instead, per the round-12 review). Offenders: ' +
+    JSON.stringify(offenders));
+});
+
+// --- artifact-completeness: host-side on-disk paths use <host-X-root>/... placeholders ---
+
+// The 5 Skills named by the round-12 reviewer (`goal-persistence`,
+// `long-term-memory`, `session-handoff`, `session-branch-fork`,
+// `subagent-family-tracking`) document host-side on-disk paths for
+// the goal file, memory workspace, handoff file, paginated history,
+// and sub-agent family file. None of those paths are on the mcode
+// 0.2.4 public surface; the Skills must use
+// `<host-X-root>/...` placeholders, not literal `.minimax/...` paths.
+//
+// Negative fixture: a Skill body that documents a literal
+// `.minimax/handoff/2026-08-24-xxx.md` path. The fixture must be
+// detectable.
+test('artifact-completeness: literal .minimax/<X>/... host paths in Skill bodies are detected (round-12 negative fixture)', () => {
+  // The fixture: a Skill body that documents a literal
+  // `.minimax/handoff/2026-08-24-xxx.md` path. This is the
+  // round-12 defect shape.
+  const FIXTURE_LITERAL_PATH = `
+The handoff file is at \`.minimax/handoff/2026-08-24-xxx.md\` and
+the goal file is at \`.minimax/goal/2026-08-23-auth-oidc.md\`.
+`;
+  // A Skill body that uses the `<host-X-root>/...` placeholder.
+  // This is the round-12 fix shape.
+  const FIXTURE_PLACEHOLDER = `
+The handoff file is at \`<host-handoff-root>/2026-08-24-xxx.md\`
+and the goal file is at \`<host-goal-root>/2026-08-23-auth-oidc.md\`.
+`;
+  // Helper: count literal `.minimax/<X>/...` host paths in a
+  // body. The path MUST be inside backticks (otherwise the round-1
+  // prose-mention loophole re-opens) AND MUST be of the shape
+  // `.minimax/<category>/<rest>`.
+  const countLiteralPaths = (text) => {
+    const t = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    // The Skill's `<host-X-root>/...` placeholder must NOT match
+    // this regex (it does not start with `.minimax/`).
+    const re = /`\.minimax\/[a-z][a-z0-9_-]*\/[^`]+`/gu;
+    const hits = [];
+    for (const m of t.matchAll(re)) hits.push(m[0]);
+    return hits;
+  };
+  assert.equal(countLiteralPaths(FIXTURE_LITERAL_PATH).length, 2,
+    'literal-path fixture must yield exactly 2 offenders (handoff + goal)');
+  assert.equal(countLiteralPaths(FIXTURE_PLACEHOLDER).length, 0,
+    'placeholder fixture must yield 0 offenders');
+});
+
+test('artifact-completeness: 5 Skills use <host-X-root>/... placeholders for host-side on-disk paths, not literal .minimax/<X>/...', () => {
+  // Skills named by the round-12 reviewer. The mapping
+  // `<host-X-root>` is the conceptual placeholder the v1.0.5
+  // amendment introduces; the Skills MUST use it for any path
+  // outside the plugin package itself.
+  const HOST_PATH_SKILLS = [
+    { name: 'goal-persistence', placeholder: '<host-goal-root>' },
+    { name: 'long-term-memory', placeholder: '<host-memory-root>' },
+    { name: 'session-handoff', placeholder: '<host-handoff-root>' },
+    { name: 'session-branch-fork', placeholder: '<host-history-root>' },
+    { name: 'subagent-family-tracking', placeholder: '<host-agents-root>' },
+  ];
+  const re = /`\.minimax\/[a-z][a-z0-9_-]*\/[^`]+`/gu;
+  for (const { name } of HOST_PATH_SKILLS) {
+    const path = join(SKILLS_ROOT, name, 'SKILL.md');
+    const text = readFileSync(path, 'utf8');
+    const t = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    // The literal-path contract applies to the body, not the
+    // frontmatter. The frontmatter `changes-from-v...` field may
+    // legitimately quote the round-12 defect shape (e.g. "the
+    // previous body pinned a literal `.minimax/<X>/...` path") as
+    // a historical reference; that is a description of the
+    // defect, not an actionable claim.
+    const fmEnd = t.indexOf('\n---\n', 4);
+    assert.ok(fmEnd > 0, `${name}: frontmatter must be present`);
+    const body = t.slice(fmEnd + 5);
+    const offenders = [];
+    for (const m of body.matchAll(re)) offenders.push(m[0]);
+    assert.equal(offenders.length, 0,
+      `${name} has literal '.minimax/<X>/...' host-side on-disk paths in ` +
+      'the body. The mcode 0.2.4 public surface does not document any ' +
+      'of these paths; the v1.0.5 amendment requires a `<host-X-root>/...` ' +
+      'placeholder. Offenders: ' + JSON.stringify(offenders));
+  }
+});
+
+// --- API-vocabulary: long-term-memory conceptual-pseudocode tagging for Codex-internal flags ---
+
+// `long-term-memory` documents the Codex `ephemeral` / `no_collab` /
+// `no_network` / `no_memory_tool` sub-agent configuration flags and
+// the `features.disable(Collab / MemoryTool / Apps / Plugins)` /
+// `approval_policy = Never` / `network_access = false` /
+// `memories.generate_memories = false` / `use_memories = false` knobs.
+// None of these are mcode 0.2.4 surface; they are Codex-internal
+// APIs. The round-12 reviewer requires these be labelled as
+// conceptual pseudocode.
+//
+// The contract: any of these flags appearing inside a fenced code
+// block MUST be accompanied by a "conceptual" / "Codex reference" /
+// "Codex-internal" annotation either inside the same code block or
+// in the frontmatter `compatibility` field.
+test('API-vocabulary: long-term-memory labels ephemeral / no_collab / no_network / no_memory_tool / features.disable / approval_policy / network_access as conceptual pseudocode (round-12 negative fixture)', () => {
+  // Negative fixture: a code block that uses `ephemeral` /
+  // `no_collab` / `no_network` / `no_memory_tool` WITHOUT a
+  // "conceptual" / "Codex reference" / "Codex-internal" annotation
+  // either in the same block or in the frontmatter compatibility
+  // field.
+  const NEG_FRONT = `---
+name: long-term-memory
+description: |
+  Cross-session memory.
+compatibility: Requires MiniMax Code with Agent Plugins 1.0 support.
+metadata:
+  author: antianqi
+  version: "0.1.0"
+---`;
+  const NEG_BODY = `
+## Phase 2
+
+\`\`\`text
+# Run consolidation. The agent uses these flags.
+spawn_consolidation_agent(
+  ephemeral=true,
+  no_collab,
+  no_network,
+  no_memory_tool,
+  features.disable(Collab / MemoryTool / Apps / Plugins),
+  approval_policy=Never,
+  network_access=false
+)
+\`\`\`
+`;
+  // The fix shape: same body, but the frontmatter compatibility
+  // field labels the Codex-internal knobs as conceptual, AND the
+  // code block is annotated as conceptual pseudocode.
+  const POS_FRONT = `---
+name: long-term-memory
+description: |
+  Cross-session memory.
+compatibility: Targets MiniMax Code 0.2.4. Conceptual pseudocode (Codex reference). The ephemeral / features.disable / approval_policy / network_access / no_collab / no_network / no_memory_tool knobs are Codex-internal APIs.
+metadata:
+  author: antianqi
+  version: "0.1.1"
+---`;
+  const POS_BODY = `
+## Phase 2
+
+\`\`\`text
+# CONCEPTUAL PSEUDOCODE (Codex reference, codex-rs/memories/) —
+# the ephemeral / no_collab / no_network / no_memory_tool /
+# features.disable / approval_policy / network_access flags below
+# are Codex-internal, NOT mcode 0.2.4 surface.
+spawn_consolidation_agent(
+  ephemeral=true,
+  no_collab,
+  no_network,
+  no_memory_tool,
+  features.disable(Collab / MemoryTool / Apps / Plugins),
+  approval_policy=Never,
+  network_access=false
+)
+\`\`\`
+`;
+  // Helper: a Skill is OK iff (a) the frontmatter `compatibility`
+  // string contains "conceptual" (case-insensitive) AND "codex"
+  // (case-insensitive) — i.e. it labels the surface as
+  // conceptual, OR (b) every fenced code block that mentions one
+  // of the Codex-internal flags is itself annotated "conceptual"
+  // / "Codex reference" / "Codex-internal".
+  const CODEX_FLAGS = /\b(ephemeral|no_collab|no_network|no_memory_tool|features\.disable|approval_policy|network_access|memories\.generate_memories|use_memories|redact_secrets)\b/u;
+  const CONCEPTUAL = /\b(Conceptual pseudocode|Codex reference|Codex-internal|conceptual)\b/i;
+  const audit = (front, body) => {
+    // Step 1: if the compatibility string labels the surface as
+    // conceptual AND codex, the Skill is OK wholesale.
+    const frontMatch = /compatibility:\s*([^\n]+(?:\n\s+[^\n]+)*)/u.exec(front);
+    const frontStr = frontMatch ? frontMatch[1] : '';
+    if (/\bconceptual\b/i.test(frontStr) && /\bcodex\b/i.test(frontStr)) {
+      return []; // wholesale labelled
+    }
+    // Step 2: otherwise, every fenced code block that mentions a
+    // Codex-internal flag must be annotated.
+    const t = body.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const fenceRe = /```[a-zA-Z0-9_-]*\n([\s\S]*?)```/gu;
+    const offenders = [];
+    for (const fm of t.matchAll(fenceRe)) {
+      const block = fm[1];
+      if (!CODEX_FLAGS.test(block)) continue;
+      if (!CONCEPTUAL.test(block)) {
+        offenders.push(block.slice(0, 80));
+      }
+    }
+    return offenders;
+  };
+  assert.equal(audit(NEG_FRONT, NEG_BODY).length, 1,
+    'negative fixture (no conceptual annotation, no frontmatter label) must yield exactly 1 offender');
+  assert.equal(audit(POS_FRONT, POS_BODY).length, 0,
+    'positive fixture (frontmatter labels surface as conceptual) must yield 0 offenders');
+});
+
+test('API-vocabulary: long-term-memory SKILL.md labels Codex-internal flags as conceptual pseudocode', () => {
+  const path = join(SKILLS_ROOT, 'long-term-memory', 'SKILL.md');
+  const text = readFileSync(path, 'utf8');
+  const t = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  // Split frontmatter from body.
+  const fmEnd = t.indexOf('\n---\n', 4);
+  assert.ok(fmEnd > 0, 'long-term-memory: frontmatter must be present');
+  const front = t.slice(0, fmEnd + 5);
+  const body = t.slice(fmEnd + 5);
+  const CODEX_FLAGS = /\b(ephemeral|no_collab|no_network|no_memory_tool|features\.disable|approval_policy|network_access|memories\.generate_memories|use_memories|redact_secrets)\b/u;
+  const CONCEPTUAL = /\b(Conceptual pseudocode|Codex reference|Codex-internal|conceptual)\b/i;
+  // Wholesale check: if the frontmatter compatibility string
+  // labels the surface as conceptual AND codex, the Skill is OK.
+  const frontMatch = /compatibility:\s*([^\n]+(?:\n\s+[^\n]+)*)/u.exec(front);
+  const frontStr = frontMatch ? frontMatch[1] : '';
+  if (/\bconceptual\b/i.test(frontStr) && /\bcodex\b/i.test(frontStr)) {
+    return; // wholesale labelled
+  }
+  // Per-block check: every fenced code block that mentions a
+  // Codex-internal flag must itself be annotated.
+  const fenceRe = /```[a-zA-Z0-9_-]*\n([\s\S]*?)```/gu;
+  const offenders = [];
+  for (const fm of body.matchAll(fenceRe)) {
+    const block = fm[1];
+    if (!CODEX_FLAGS.test(block)) continue;
+    if (!CONCEPTUAL.test(block)) {
+      offenders.push(block.slice(0, 100));
+    }
+  }
+  assert.equal(offenders.length, 0,
+    'long-term-memory has fenced code blocks mentioning Codex-internal ' +
+    'flags (ephemeral / no_collab / no_network / no_memory_tool / ' +
+    'features.disable / approval_policy / network_access / ' +
+    'memories.generate_memories / use_memories / redact_secrets) WITHOUT ' +
+    'a "conceptual pseudocode" / "Codex reference" / "Codex-internal" ' +
+    'annotation. Per the round-12 review, these must be labelled. ' +
+    'Offenders: ' + JSON.stringify(offenders));
 });

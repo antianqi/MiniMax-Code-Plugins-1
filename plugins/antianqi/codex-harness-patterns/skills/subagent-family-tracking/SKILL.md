@@ -6,11 +6,12 @@ description: |
   TRIGGER PHRASES: "子 agent 都在干嘛", "sub-agent", "子任务", "family tree", "who is running", "还在跑吗", "还有几个没关", "what's your sub-agent doing", "subagent family", "subagent tree", "all children closed".
   SKIP WHEN: sub-task is so cheap you'd just inline it, harness already exposes live sub-agent dashboard, you are the child not the parent.
 license: Apache-2.0
-compatibility: Requires MiniMax Code with Agent Plugins 1.0 support.
+compatibility: Targets MiniMax Code 0.2.4. **Conceptual reference only.** The family-file path is **host-internal** on mcode 0.2.4; the mcode public surface does not document a family-file path. The Skills below use `<host-agents-root>/<thread-id>/subagents.md` as a conceptual placeholder; the host determines the actual root. The `<thread-id>` placeholder is the calling session's thread id; on mcode 0.2.4, sub-agent lifecycles are tracked by `task_id` (returned by `task(...)`) and any cross-sub-agent parent/child bookkeeping is the calling agent's responsibility.
 metadata:
   author: antianqi
-  version: "0.1.1"
+  version: "0.1.2"
   inspired-by: https://github.com/openai/codex/blob/main/codex-rs/agent-graph-store/
+  changes-from-v0.1.1: "v1.0.5 amendment (PR #33 round-12, hetaoBackend CHANGES_REQUESTED on head 5a4e3fc): the previous body pinned a literal `.minimax/agents/<thread-id>/subagents.md` path and a `Requires MiniMax Code with Agent Plugins 1.0 support.` compatibility string with no mcode 0.2.4 contract backing. The body now wraps the family-file path in a `<host-agents-root>/<thread-id>/subagents.md` placeholder with an `illustrative; actual path is host-internal` annotation, and the `compatibility` frontmatter field explicitly states the conceptual-reference nature of the layout."
 ---
 
 # Sub-Agent Family Tracking
@@ -48,8 +49,12 @@ Activate when **any** of these is true:
 
 ## Process
 
-1. **Pick a single, predictable path.** Default:
-   `.minimax/agents/<thread-id>/subagents.md`. Different from the goal file (which is "what we
+1. **Pick a single, predictable path.** **Default (illustrative; actual
+   on-disk path is host-internal):**
+   `<host-agents-root>/<thread-id>/subagents.md`. The mcode 0.2.4 public
+   surface does not document a family-file path. The Skills below use
+   `<host-agents-root>` as a conceptual placeholder; the host determines
+   the actual root. Different from the goal file (which is "what we
    are doing") and the world-state file (which is "where we are"); this is "who is
    working for us."
 2. **Initialise the file on the first spawn** in this exact shape:
@@ -97,10 +102,17 @@ The user sees:
 
 ## Example
 
+> The path to the family file in the example below is illustrative; the
+> actual on-disk path is host-internal. The `thread-7c2b` value is a
+> placeholder for the calling session's thread id (on mcode 0.2.4 the
+> relevant lifecycle identifier for a sub-agent is the `task_id`
+> returned by `task(...)`). The file shape is what the calling agent
+> maintains in its own bookkeeping.
+
 ```markdown
 # Sub-agent family — Auth refactor (OIDC alongside SAML)
 
-**Parent (you)**: thread-7c2b
+**Parent (you)**: thread-7c2b *(placeholder for the calling session's thread id)*
 **Last updated**: 2026-08-23T23:55:00Z
 
 ## Children

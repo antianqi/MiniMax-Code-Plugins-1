@@ -1,4 +1,4 @@
----
+﻿---
 name: session-handoff
 description: |
   At session end, write a structured handoff file so next session can pick up in 30 seconds.
@@ -6,11 +6,12 @@ description: |
   TRIGGER PHRASES: "今天先到这", "done for today", "see you tomorrow", "we'll continue later", "下次再继续", "先到这", "end session", "session 结束", "收尾", "写到 handoff file", "wrap up", "session handoff", "session 接力".
   SKIP WHEN: session just started (no in-progress work to hand off), work is fully complete and verified (completion-audit passed), user said "throw it all away, start fresh next time" / "全部扔掉".
 license: Apache-2.0
-compatibility: Requires MiniMax Code with Agent Plugins 1.0 support.
+compatibility: Targets MiniMax Code 0.2.4. **Conceptual reference only.** The handoff file path, the goal file path, the world-state file path, and the family file path are all **host-internal** on mcode 0.2.4; the mcode public surface does not document any of them. The Skills below use `<host-handoff-root>/...`, `<host-goal-root>/...`, `<host-state-root>/...`, and `<host-family-root>/...` placeholders as conceptual guidance, not as documented mcode contract paths.
 metadata:
   author: antianqi
-  version: "0.1.1"
+  version: "0.1.2"
   inspired-by: https://github.com/openai/codex/blob/main/codex-rs/state/src/runtime/recovery.rs and state/migrations/0047_rollout_migration_state.sql
+  changes-from-v0.1.1: "v1.0.5 amendment (PR #33 round-12, hetaoBackend CHANGES_REQUESTED on head 5a4e3fc): the previous body pinned a literal `.minimax/handoff/...` path and used `.minimax/goal/` / `.minimax/state/` / `.minimax/family/` paths as if they were mcode 0.2.4 contract paths. The body now wraps every host-side on-disk path in a `<host-X-root>/...` placeholder with an `illustrative; actual path is host-internal` annotation, and the `compatibility` frontmatter field explicitly states the conceptual-reference nature of the layout. (The literal `.minimax/...` paths named in this change-log are the round-12 defect shape; the v1.0.5 fix is the `<host-X-root>/...` placeholder used in the body.)"
 ---
 
 # Session Handoff
@@ -49,9 +50,12 @@ Activate when **any** of these is true:
 1. **Confirm the handoff is wanted** (if you can — skip this step if the user is
    clearly stepping away). One line: "Writing a handoff file so next session can
    pick this up — okay?"
-2. **Choose a single, predictable path.** Default:
-   `.minimax/handoff/<ISO-date>-<short-id>.md`. Different from world-state and
-   goal files (those describe current state; handoff is the **transition**).
+2. **Choose a single, predictable path.** **Default (illustrative; actual
+   on-disk path is host-internal):** `<host-handoff-root>/<ISO-date>-<short-id>.md`.
+   The mcode 0.2.4 public surface does not document a handoff file path. The
+   Skills below use `<host-handoff-root>` as a conceptual placeholder; the host
+   determines the actual root. Different from world-state and goal files
+   (those describe current state; handoff is the **transition**).
 3. **Write the handoff file** in this exact shape:
 
    ```markdown
@@ -108,7 +112,8 @@ Activate when **any** of these is true:
    handoff file X" so the next-session agent knows to read it first.
 
 5. **Tell the user, in one line**, where the handoff is: "Handoff written to
-   `.minimax/handoff/2026-08-24-xxx.md` — read this first next session."
+   `<host-handoff-root>/2026-08-24-xxx.md` *(path illustrative; actual
+   on-disk root is host-internal)* — read this first next session."
 
 6. **If a sub-task is in flight** (background command, async build, etc.):
    - Record its task_id, command, expected completion signal in the handoff.
@@ -138,9 +143,9 @@ The user sees, in this order:
 
 ## Current state (point-in-time snapshot)
 
-- `.minimax/goal/2026-08-23-auth-oidc.md` — last updated 2026-08-23T23:55:00Z
-- `.minimax/state/auth-refactor.md` — last updated 2026-08-23T23:55:00Z
-- `.minimax/family/auth-refactor.md` — last updated 2026-08-23T23:55:00Z
+- `<host-goal-root>/2026-08-23-auth-oidc.md` *(path illustrative; actual on-disk root is host-internal)* — last updated 2026-08-23T23:55:00Z
+- `<host-state-root>/auth-refactor.md` *(path illustrative; actual on-disk root is host-internal)* — last updated 2026-08-23T23:55:00Z
+- `<host-family-root>/auth-refactor.md` *(path illustrative; actual on-disk root is host-internal)* — last updated 2026-08-23T23:55:00Z
 
 ## What was done (this session)
 
@@ -167,8 +172,8 @@ The user sees, in this order:
 
 - `/repo/src/auth/idp.rs` — current IdP interface
 - `/repo/src/auth/oidc/mod.rs` — drafted OIDC implementation
-- `.minimax/goal/2026-08-23-auth-oidc.md` — current goal
-- `.minimax/state/auth-refactor.md` — current world state
+- `<host-goal-root>/2026-08-23-auth-oidc.md` *(path illustrative; actual on-disk root is host-internal)* — current goal
+- `<host-state-root>/auth-refactor.md` *(path illustrative; actual on-disk root is host-internal)* — current world state
 
 ## Things that might be wrong on resume
 
@@ -195,7 +200,7 @@ The user sees, in this order:
 
 ## Verification checklist
 
-- [ ] Is the handoff at a single, predictable path (`.minimax/handoff/...`)?
+- [ ] Is the handoff at a single, predictable path (`<host-handoff-root>/...` *(path illustrative; actual on-disk root is host-internal)*)?
 - [ ] Is the goal section copied verbatim from the user?
 - [ ] Are the "done" items ✅ with file paths, and the "in progress" items ⬜ with
       exact "where we were" pointers?

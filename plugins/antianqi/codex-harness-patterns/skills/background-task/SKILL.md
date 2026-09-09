@@ -6,12 +6,12 @@ description: |
   TRIGGER PHRASES: "background", "background it", "后台", "don't block", "non-blocking", "in the background", "run async", "long-running", "put it in the background".
   SKIP WHEN: the sub-agent / command finishes in <5 seconds, the user explicitly wants to wait for output, the command is interactive (REPL, vim, ssh).
 license: Apache-2.0
-compatibility: Targets MiniMax Code 0.2.4. Verified against the bundled `cli.js` schema. `task(...)` accepts `run_in_background: true` and returns a `task_id` for later `task_query` / `task_output` / `task_stop`. `bash(...)` accepts `run_in_background: true` and returns a job handle. The Codex-harness `bash(task_name=..., run_in_background=true, action="kill")` shape is **not** the mcode surface — mcode's `bash` has no `task_name` or `action` field; killing is via `task_stop(task_id=...)` for sub-agents and via the host's job-control API for shell jobs.
+compatibility: Targets MiniMax Code 0.2.4. Verified against the bundled `cli.js` schema. `task(...)` accepts `run_in_background: true` and returns a `task_id` for later `task_query` / `task_output` / `task_stop`. `bash(...)` accepts `run_in_background: true` and returns a job handle. **The exact shape of the returned `bash` job handle is NOT part of the public mcode 0.2.4 runtime contract; the host's job-control API is the source of truth for the underlying process id. The Skills below treat the handle as opaque and locate the process id by means outside the mcode contract (the launch context, the host's job-control API, or the calling agent's own bookkeeping). Do not assume the handle is a raw integer PID or that it parses to one.** The Codex-harness `bash(task_name=..., run_in_background=true, action="kill")` shape is **not** the mcode surface — mcode's `bash` has no `task_name` or `action` field; killing is via `task_stop(task_id=...)` for sub-agents and via the host's job-control API for shell jobs.
 metadata:
   author: antianqi
-  version: "0.2.0"
+  version: "0.2.1"
   inspired-by: https://github.com/openai/codex/blob/main/codex-rs/core/src/unified_exec/ and protocol::Op::CleanBackgroundTerminals (design principle only; the mcode 0.2.4 surface is `task(run_in_background=true)` + `task_query` / `task_output` / `task_stop` for sub-agents, and `bash(run_in_background=true)` for shell jobs)
-  changes-from-v0.1.2: "Replaced the v0.1.2 'Codex-harness pseudocode + adapt the call' block with the actual mcode 0.2.4 surface. mcode `task` and `bash` both accept `run_in_background: true`; for sub-agents the returned handle is a `task_id` queried with `task_query` / `task_output` / `task_stop`. The Codex-harness `bash(task_name=..., action=\"kill\")` shape is removed because mcode's `bash` has neither `task_name` nor an `action` sub-action field (the validator in `cli.js:xza` only allows `command` / `timeout` / `run_in_background`). Killing a sub-agent uses `task_stop(task_id=...)`; killing a shell background job uses the host's own job-control API (the example now shows `Stop-Process -Id` on Windows and `kill -PID` on POSIX, both invoked through a foreground `bash` call rather than a fake `action=\"kill\"` field)."
+  changes-from-v0.2.0: "v1.0.5 amendment (PR #33 round-12, hetaoBackend CHANGES_REQUESTED on head 5a4e3fc): the `bash(run_in_background: true)` example previously treated the returned handle as a raw integer PID and passed it directly to `Stop-Process -Id <pid>` / `kill <pid>`. mcode 0.2.4 does not document that the handle exposes a process id, does not document the handle shape, and does not document a kill action. The example now uses `<process-id>` as a conceptual placeholder; the launching agent is responsible for recording the process id (or a way to resolve it) by its own means, separate from this Skill. The `compatibility` frontmatter field now states explicitly that the host's job-control API is the source of truth for the underlying process id. The Codex-harness `bash(task_name=..., action=\"kill\")` removal from v0.2.0 is unchanged."
 ---
 
 # Background Task
@@ -68,20 +68,27 @@ bash(
 ```
 
 When `run_in_background: true`, the `bash` call returns immediately with a
-job handle that the host's job-control API can target (Windows:
-`Stop-Process -Id <pid>`; POSIX: `kill <pid>`, both invoked through a
-foreground `bash` call rather than any `action="kill"` field). The exact
-shape of the returned handle is not part of the public mcode 0.2.4 runtime
-contract; the host's job-control API is the source of truth for the
-underlying process id. **There is no `task_name=` and no `action="kill"`
+job handle. **Conceptual pseudocode below.** The exact shape of the returned
+handle is NOT part of the public mcode 0.2.4 runtime contract; the host's
+job-control API is the source of truth for the underlying process id. The
+Skills below treat the handle as opaque and locate the process id by means
+outside the mcode contract (the launch context, the host's job-control API,
+or the calling agent's own bookkeeping). Windows: `Stop-Process -Id <process-id>`;
+POSIX: `kill <process-id>`, both invoked through a foreground `bash` call
+rather than any `action="kill"` field. The placeholder `<process-id>` is
+whatever process id the host's job-control API identifies; the launching
+agent must record it (or a way to resolve it) by its own means, separate
+from this Skill. **There is no `task_name=` and no `action="kill"`
 field.** The Codex-harness shape `bash(task_name=..., run_in_background=true,
 action="kill")` is **not** the mcode surface — mcode's `bash` validator
 rejects any key outside `command` / `timeout` / `run_in_background`.
 
 Killing a shell background job: invoke the host's job-control API in a
-**foreground** `bash` call. Windows: `Stop-Process -Id <pid>`. POSIX:
-`kill <pid>`. The Skills do not pretend `bash(action="kill")` exists on
-mcode 0.2.4.
+**foreground** `bash` call. Windows: `Stop-Process -Id <process-id>`. POSIX:
+`kill <process-id>`. The Skills do not pretend `bash(action="kill")` exists
+on mcode 0.2.4. The `<process-id>` value is host-internal (e.g. a Windows
+PID resolved via `Get-Process`, or a POSIX pid resolved via `ps -p`); the
+launching agent records it out-of-band from this Skill.
 
 ## When to use
 
@@ -132,9 +139,12 @@ Activate when **any** of these is true:
    - Sub-agent: `task_query(task_id)` for status, `task_output(task_id)` for
      output, `task_stop(task_id)` to stop.
    - Shell: foreground `bash` call against the host's job-control API
-     (`Get-Process -Id <pid>` / `Stop-Process -Id <pid>` on Windows;
-     `ps -p <pid>` / `kill <pid>` on POSIX). Read the log file or stdout
-     from the original launch.
+     (`Get-Process -Id <process-id>` / `Stop-Process -Id <process-id>` on
+     Windows; `ps -p <process-id>` / `kill <process-id>` on POSIX). Read
+     the log file or stdout from the original launch. `<process-id>` is
+     the placeholder for the process id the launching agent recorded at
+     launch time (out-of-band from this Skill); mcode 0.2.4 does not
+     document the `bash` job-handle shape.
 
 ## Output contract
 
@@ -209,6 +219,15 @@ background launches are demonstrated.
 ```text
 # Launch a long-running dev server in the background.
 # mcode returns a job id we can later target via the host's job-control API.
+#
+# CONCEPTUAL PSEUDOCODE for the "check / kill" steps: the mcode 0.2.4
+# `bash` tool does not document the shape of the returned job handle
+# and does not document a kill action. The launching agent must record
+# the underlying process id (Windows PID / POSIX pid) at launch time,
+# out-of-band from this Skill. The `<process-id>` placeholder below is
+# that recorded value. On a real install, replace it with the actual
+# process id; do not assume the handle is a raw integer PID or that it
+# parses to one.
 
 > bash(
     command="npm run dev",
@@ -218,20 +237,20 @@ background launches are demonstrated.
 # part of the public mcode 0.2.4 runtime contract; the host's
 # job-control API is the source of truth. Treat the handle as
 # opaque and pass it to the host's job-control API in a
-# foreground `bash` call (e.g. `Stop-Process -Id <pid>` /
-# `kill <pid>` on POSIX) when you need to stop the job.
+# foreground `bash` call (e.g. `Stop-Process -Id <process-id>` /
+# `kill <process-id>` on POSIX) when you need to stop the job.
 
 # Later, check whether it is still alive (foreground bash call):
 > bash(
-    command="Get-Process -Id 12345 | Select-Object Id,ProcessName,StartTime"
+    command="Get-Process -Id <process-id> | Select-Object Id,ProcessName,StartTime"
   )
-# (or on POSIX: `ps -p 12345 -o pid,etime,cmd`)
+# (or on POSIX: `ps -p <process-id> -o pid,etime,cmd`)
 
 # Stop it when done (foreground bash call to the host's job-control API):
 > bash(
-    command="Stop-Process -Id 12345"
+    command="Stop-Process -Id <process-id>"
   )
-# (or on POSIX: `kill 12345`)
+# (or on POSIX: `kill <process-id>`)
 ```
 
 The **decision** (background, with a recorded handle) is the same; the
