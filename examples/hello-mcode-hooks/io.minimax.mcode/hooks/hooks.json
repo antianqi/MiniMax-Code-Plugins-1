@@ -1,47 +1,148 @@
 {
   "$schema": "https://minimax.io/schemas/mcode-hooks/0.1.0/hooks.schema.json",
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/io.minimax.mcode/hooks/scripts/record.mjs --event PreToolUse --state ${PLUGIN_DATA}/state.json",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/io.minimax.mcode/hooks/scripts/record.mjs --event PostToolUse --state ${PLUGIN_DATA}/state.json",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
-        "command": "node",
-        "args": [
-          "${PLUGIN_ROOT}/io.minimax.mcode/hooks/scripts/record.mjs",
-          "--event",
-          "SessionStart",
-          "--state",
-          "${PLUGIN_DATA}/state.json"
-        ],
-        "timeout": 5000,
-        "once": false
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/io.minimax.mcode/hooks/scripts/record.mjs --event SessionStart --state ${PLUGIN_DATA}/state.json",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SessionEnd": [
       {
-        "command": "node",
-        "args": [
-          "${PLUGIN_ROOT}/io.minimax.mcode/hooks/scripts/record.mjs",
-          "--event",
-          "SessionEnd",
-          "--state",
-          "${PLUGIN_DATA}/state.json"
-        ],
-        "timeout": 5000,
-        "once": false
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/io.minimax.mcode/hooks/scripts/record.mjs --event SessionEnd --state ${PLUGIN_DATA}/state.json",
+            "timeout": 5
+          }
+        ]
       }
     ],
-    "PreToolUse": [
+    "UserPromptSubmit": [
       {
-        "command": "node",
-        "args": [
-          "${PLUGIN_ROOT}/io.minimax.mcode/hooks/scripts/record.mjs",
-          "--event",
-          "PreToolUse",
-          "--state",
-          "${PLUGIN_DATA}/state.json"
-        ],
         "matcher": "*",
-        "timeout": 5000,
-        "once": false
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/io.minimax.mcode/hooks/scripts/record.mjs --event UserPromptSubmit --state ${PLUGIN_DATA}/state.json",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/io.minimax.mcode/hooks/scripts/record.mjs --event Stop --state ${PLUGIN_DATA}/state.json",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/io.minimax.mcode/hooks/scripts/record.mjs --event PreCompact --state ${PLUGIN_DATA}/state.json",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/io.minimax.mcode/hooks/scripts/record.mjs --event Notification --state ${PLUGIN_DATA}/state.json",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/io.minimax.mcode/hooks/scripts/record.mjs --event SubagentStart --state ${PLUGIN_DATA}/state.json",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/io.minimax.mcode/hooks/scripts/record.mjs --event SubagentStop --state ${PLUGIN_DATA}/state.json",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/io.minimax.mcode/hooks/scripts/record.mjs --event PermissionRequest --state ${PLUGIN_DATA}/state.json",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/io.minimax.mcode/hooks/scripts/record.mjs --event PermissionDenied --state ${PLUGIN_DATA}/state.json",
+            "timeout": 5
+          }
+        ]
       }
     ]
   }

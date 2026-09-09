@@ -159,6 +159,12 @@ function isSafeRemoteUrl(value) {
 }
 
 export const CLIENT_EXTENSION_NAMESPACES = Object.freeze(['io.minimax.mcode']);
+// The 0.3.10 PascalCase event catalog: 12 portable events (the
+// 0.2.4 catalog preserved) plus 3 0.3.10 runtime-internal streaming
+// events (MessageComplete / StreamChunk / StreamChunkThreshold).
+// The `Fwe` allowlist is a runtime-side question (see the spec
+// table); the validator accepts every event in the catalog so a
+// Plugin can target events that are `forward` today.
 const KNOWN_HOOK_EVENTS = new Set([
   'PreToolUse',
   'PostToolUse',
@@ -172,33 +178,62 @@ const KNOWN_HOOK_EVENTS = new Set([
   'SubagentStop',
   'PermissionRequest',
   'PermissionDenied',
+  'MessageComplete',
+  'StreamChunk',
+  'StreamChunkThreshold',
 ]);
-const HOOK_DOCUMENT_FIELDS = new Set(['$schema', 'hooks']);
-const HOOK_ENTRY_FIELDS = new Set([
-  'command',
-  'args',
-  'env',
-  'cwd',
-  'matcher',
-  'pattern',
-  'regex',
-  'glob',
-  'timeout',
-  'timeoutMs',
-  'once',
+// The closed-schema allowlist for the document root. The 0.3.10
+// parser accepts either the `{"hooks": {...}}` wrapper or events
+// directly on the root, so we allow both. The optional `$schema`
+// is silently ignored by the runtime but kept here for
+// forward-contract use; it must match the proposal URL if present.
+const HOOK_DOCUMENT_FIELDS = new Set([
+  '$schema',
+  'hooks',
+  ...KNOWN_HOOK_EVENTS,
 ]);
+// The closed-schema allowlist for an outer (matcher) entry. The
+// 0.3.10 parser walks each matcher entry and requires a
+// non-empty `hooks[]` array; `matcher` is optional.
+const HOOK_MATCHER_FIELDS = new Set(['matcher', 'hooks']);
+// The closed-schema allowlist for an inner (command) descriptor.
+// The 0.3.10 parser only consumes `type` / `command` / `timeout`
+// from the inner entry; everything else is dropped on the floor.
+// We reject the previous companion's fields here so a Plugin
+// migrating from 0.2.4 to 0.3.10 gets a clear error rather than
+// a silent no-op.
+const HOOK_COMMAND_FIELDS = new Set(['type', 'command', 'timeout']);
+// Field names the 0.3.10 parser does not consume (either
+// runtime-internal discriminators or 0.2.4-only fields). The
+// validator surfaces these as a closed-schema violation when they
+// appear in a hook entry, with a message that points at the
+// spec field-vocabulary table. `type` is intentionally NOT in
+// this set: it is a regular field on the inner command
+// descriptor (see HOOK_COMMAND_FIELDS) whose value is checked
+// separately.
 const HOOK_RESERVED_FIELDS = new Set([
-  'type',
   'shell',
   'prompt',
   'http',
   'agent',
   'script',
   'function',
+  'args',
+  'env',
+  'cwd',
+  'pattern',
+  'regex',
+  'glob',
+  'once',
+  'timeoutMs',
 ]);
-const HOOK_TIMEOUT_DEFAULT = 30000;
-const HOOK_TIMEOUT_MIN = 100;
-const HOOK_TIMEOUT_MAX = 600000;
+// `timeout` is in seconds in the 0.3.10 schema (the parser
+// multiplies by 1000 internally). 1s..600s covers the
+// "tool-call lifetime" floor through the "compaction pass" ceiling
+// with margin.
+const HOOK_TIMEOUT_DEFAULT = 30;
+const HOOK_TIMEOUT_MIN = 1;
+const HOOK_TIMEOUT_MAX = 600;
 
 function rejectUnknownFields(record, allowed, label) {
   for (const key of Object.keys(record)) {
@@ -211,78 +246,66 @@ function rejectUnknownFields(record, allowed, label) {
   }
 }
 
+// Validate an inner (command) descriptor. The 0.3.10 parser
+// requires `command` when `type === "command"` (the only type
+// the parser dispatches today); `matcher` lives on the outer
+// entry, not here.
+export function validateHookCommand(value, label) {
+  assert(isRecord(value), `${label}: hook command must be an object`);
+  rejectUnknownFields(value, HOOK_COMMAND_FIELDS, label);
+  const type = value.type === undefined ? 'command' : value.type;
+  assert(type === 'command', `${label}: type must be "command" in @minimax-ai/code@0.3.10 (the only dispatched handler kind); got ${JSON.stringify(type)}`);
+  assert(typeof value.command === 'string' && value.command.length > 0, `${label}: command is required and must be a non-empty string`);
+  if (value.timeout !== undefined) {
+    assert(Number.isInteger(value.timeout) && value.timeout >= HOOK_TIMEOUT_MIN && value.timeout <= HOOK_TIMEOUT_MAX, `${label}: timeout must be an integer between ${HOOK_TIMEOUT_MIN} and ${HOOK_TIMEOUT_MAX} seconds (the 0.3.10 parser multiplies by 1000)`);
+  }
+  return { ...value, type, command: value.command, timeout: value.timeout === undefined ? HOOK_TIMEOUT_DEFAULT : value.timeout };
+}
+
+// Validate an outer (matcher) entry. The 0.3.10 parser requires
+// `hooks[]`; `matcher` is optional. This is the structural shape
+// that 0.2.4 flat entries did not satisfy.
 export function validateHookEntry(value, label) {
   assert(isRecord(value), `${label}: hook entry must be an object`);
-  rejectUnknownFields(value, HOOK_ENTRY_FIELDS, label);
-  assert(typeof value.command === 'string' && value.command.length > 0, `${label}: command is required`);
-  assert(
-    isBareCommand(value.command) || isContainedRelativePath(value.command),
-    `${label}: command must be a bare executable or a contained ./ path`,
-  );
-  if (value.args !== undefined) {
-    assert(Array.isArray(value.args) && value.args.every((item) => typeof item === 'string' && item.length > 0), `${label}: args must be an array of non-empty strings`);
-  }
-  if (value.env !== undefined) {
-    assert(isRecord(value.env), `${label}: env must be an object`);
-    for (const [envKey, envValue] of Object.entries(value.env)) {
-      assert(!['PLUGIN_ROOT', 'PLUGIN_DATA'].includes(envKey), `${label}: env.${envKey} is reserved`);
-      assert(typeof envValue === 'string', `${label}: env.${envKey} must be a string`);
-    }
-  }
-  if (value.cwd !== undefined) {
-    assert(
-      typeof value.cwd === 'string'
-        && (isContainedRelativePath(value.cwd) || isContainedPluginPath(value.cwd)),
-      `${label}: cwd must be a contained ./ path (no '..', no '\\') or a path under \${PLUGIN_ROOT} or \${PLUGIN_DATA} (no '..', no '\\', no leading '/')`,
-    );
-  }
+  rejectUnknownFields(value, HOOK_MATCHER_FIELDS, label);
   if (value.matcher !== undefined) {
     assert(typeof value.matcher === 'string' && value.matcher.length > 0, `${label}: matcher must be a non-empty string`);
   }
-  if (value.pattern !== undefined) {
-    assert(typeof value.pattern === 'string' && value.pattern.length > 0, `${label}: pattern must be a non-empty string`);
-  }
-  if (value.matcher !== undefined && value.pattern !== undefined) {
-    assert(value.matcher === value.pattern, `${label}: matcher and pattern must agree when both are set`);
-  }
-  if (value.regex !== undefined) {
-    assert(typeof value.regex === 'boolean', `${label}: regex must be a boolean`);
-  }
-  if (value.glob !== undefined) {
-    assert(typeof value.glob === 'boolean', `${label}: glob must be a boolean`);
-  }
-  if (value.timeout !== undefined) {
-    assert(Number.isInteger(value.timeout) && value.timeout >= HOOK_TIMEOUT_MIN && value.timeout <= HOOK_TIMEOUT_MAX, `${label}: timeout must be an integer between ${HOOK_TIMEOUT_MIN} and ${HOOK_TIMEOUT_MAX} ms`);
-  }
-  if (value.timeoutMs !== undefined) {
-    assert(Number.isInteger(value.timeoutMs) && value.timeoutMs >= HOOK_TIMEOUT_MIN && value.timeoutMs <= HOOK_TIMEOUT_MAX, `${label}: timeoutMs must be an integer between ${HOOK_TIMEOUT_MIN} and ${HOOK_TIMEOUT_MAX} ms`);
-  }
-  if (value.once !== undefined) {
-    assert(typeof value.once === 'boolean', `${label}: once must be a boolean`);
+  assert(Array.isArray(value.hooks) && value.hooks.length > 0, `${label}: hooks must be a non-empty array of command descriptors`);
+  for (let i = 0; i < value.hooks.length; i += 1) {
+    validateHookCommand(value.hooks[i], `${label}: hooks[${i}]`);
   }
   return value;
 }
 
+// Validate the full hooks document. The 0.3.10 parser walks
+// `Object.entries` over the body and treats each value as an event
+// entry. The body is either `value.hooks` (the wrapper) or
+// `value` itself (events sit on the root). Both shapes are
+// accepted and produce identical behavior.
 export function validateHooksDocument(value, label) {
   assert(isRecord(value), `${label}: root must be an object`);
   rejectUnknownFields(value, HOOK_DOCUMENT_FIELDS, label);
-  // Round-4 fix: the previous check was `length > 0`, which accepted
-  // any non-empty string. The proposal pins a specific URL, so the
-  // validator must require that URL exactly. A plugin that wants to
-  // claim a different schema is welcome to publish a different
-  // proposal, but the validator cannot pretend a draft matches
-  // 0.1.0 just because the field is non-empty.
-  assert(value.$schema === HOOK_SCHEMA, `${label}: $schema must equal ${HOOK_SCHEMA}`);
-  assert(isRecord(value.hooks), `${label}: hooks must be an object`);
+  // The 0.3.10 runtime silently ignores `$schema`; the validator
+  // accepts it for forward contract but does not require it. When
+  // present, it must match the proposal URL exactly so a Plugin
+  // cannot claim a draft matches `0.1.0` just because the field
+  // is non-empty.
+  if (value.$schema !== undefined) {
+    assert(value.$schema === HOOK_SCHEMA, `${label}: $schema must equal ${HOOK_SCHEMA} when set`);
+  }
+  const body = 'hooks' in value ? value.hooks : value;
+  assert(isRecord(body), `${label}: hooks body must be an object (either the 'hooks' wrapper or the document root)`);
   const events = [];
-  for (const [eventName, entries] of Object.entries(value.hooks)) {
+  for (const [eventName, entries] of Object.entries(body)) {
     assert(KNOWN_HOOK_EVENTS.has(eventName), `${label}: ${eventName} is not a recognized event; expected one of ${[...KNOWN_HOOK_EVENTS].sort().join(', ')}`);
-    assert(Array.isArray(entries) && entries.length > 0, `${label}: ${eventName} must be a non-empty array`);
+    assert(Array.isArray(entries) && entries.length > 0, `${label}: ${eventName} must be a non-empty array of matcher entries`);
     for (let i = 0; i < entries.length; i += 1) {
       validateHookEntry(entries[i], `${label}: ${eventName}[${i}]`);
     }
     events.push(eventName);
   }
+  assert(events.length > 0, `${label}: at least one event entry is required`);
   return events.sort();
 }
 

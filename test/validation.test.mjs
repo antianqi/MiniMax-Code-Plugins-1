@@ -53,32 +53,71 @@ test('validates supported MCP transports and reserved environment variables', ()
   );
 });
 
-test('accepts a Hook entry with allowed field vocabulary and rejects reserved discriminators', () => {
-  const entry = validateHookEntry({
-    command: 'node',
-    args: ['${PLUGIN_ROOT}/io.minimax.mcode/hooks/scripts/record.mjs'],
-    env: { LOG: 'info' },
-    cwd: '${PLUGIN_DATA}',
+test('accepts a Hook entry (outer matcher) and a Hook command (inner descriptor)', () => {
+  // 0.3.10 schema: outer (matcher) entry holds {matcher, hooks[]};
+  // inner (command) descriptor holds {type, command, timeout}.
+  // The previous companion's flat shape is rejected.
+  const outer = validateHookEntry({
     matcher: 'Bash',
-    timeout: 5000,
-    once: false,
+    hooks: [{
+      type: 'command',
+      command: 'node ${PLUGIN_ROOT}/io.minimax.mcode/hooks/scripts/record.mjs --event PreToolUse --state ${PLUGIN_DATA}/state.json',
+      timeout: 5,
+    }],
   }, 'hook');
-  assert.equal(entry.command, 'node');
-  assert.throws(() => validateHookEntry({ command: 'node', type: 'shell' }, 'hook'), /reserved internal discriminator/u);
-  assert.throws(() => validateHookEntry({ command: 'node', env: { PLUGIN_ROOT: 'bad' } }, 'hook'), /reserved/u);
-  assert.throws(() => validateHookEntry({ command: 'node', cwd: '/etc' }, 'hook'), /cwd must be/u);
-  assert.throws(() => validateHookEntry({ command: 'node', timeout: 1 }, 'hook'), /timeout must be an integer/u);
+  assert.equal(outer.hooks[0].command.startsWith('node '), true);
+  // Reserved runtime-internal discriminators are still rejected
+  // as values of `type`. The validator gives the more specific
+  // "type must be 'command'" error rather than the closed-schema
+  // reserved-field error, because the user provided a valid
+  // field name with an invalid value. This is intentional: the
+  // more specific message is more actionable.
+  assert.throws(() => validateHookEntry({ matcher: '*', hooks: [{ type: 'shell' }] }, 'hook'), /type must be "command"/u);
+  // 0.2.4 fields are now closed-schema violations (validator
+  // surfaces them as reserved so a Plugin migrating from 0.2.4
+  // gets a clear error rather than a silent no-op).
+  assert.throws(() => validateHookEntry({ matcher: '*', hooks: [{ args: ['x'] }] }, 'hook'), /reserved/u);
+  assert.throws(() => validateHookEntry({ matcher: '*', hooks: [{ env: { LOG: 'info' } }] }, 'hook'), /reserved/u);
+  assert.throws(() => validateHookEntry({ matcher: '*', hooks: [{ cwd: './scripts' }] }, 'hook'), /reserved/u);
+  assert.throws(() => validateHookEntry({ matcher: '*', hooks: [{ once: true }] }, 'hook'), /reserved/u);
+  // `type` other than "command" is rejected because 0.3.10 only
+  // dispatches command handlers.
+  assert.throws(() => validateHookEntry({ matcher: '*', hooks: [{ type: 'prompt', command: 'x' }] }, 'hook'), /type must be "command"/u);
+  // `command` is required for the command kind.
+  assert.throws(() => validateHookEntry({ matcher: '*', hooks: [{}] }, 'hook'), /command is required/u);
+  // `timeout` is in seconds and the 0.2.4 millisecond range is
+  // out of bounds. The validator must reject `5000` here
+  // because 5000 seconds is > 600.
+  assert.throws(() => validateHookEntry({ matcher: '*', hooks: [{ command: 'x', timeout: 5000 }] }, 'hook'), /timeout must be an integer/u);
+  assert.throws(() => validateHookEntry({ matcher: '*', hooks: [{ command: 'x', timeout: 0 }] }, 'hook'), /timeout must be an integer/u);
+  // matcher must be a non-empty string when set.
+  assert.throws(() => validateHookEntry({ matcher: 123, hooks: [{ command: 'x' }] }, 'hook'), /matcher must be a non-empty string/u);
+  // The outer entry requires a non-empty hooks[] array (this is
+  // the 0.3.10 parser's most-referenced warning: the previous
+  // companion's flat shape satisfies neither matcher nor
+  // hooks[], so a Plugin that wants to fire must use the nested
+  // shape).
+  assert.throws(() => validateHookEntry({ matcher: '*' }, 'hook'), /hooks must be a non-empty array/u);
+  assert.throws(() => validateHookEntry({ matcher: '*', hooks: [] }, 'hook'), /hooks must be a non-empty array/u);
 });
 
-test('accepts a Hooks document that targets the experimental io.minimax.mcode namespace', () => {
+test('accepts a Hooks document that targets the experimental io.minimax.mcode namespace (0.3.10 nested shape)', () => {
   const events = validateHooksDocument({
     $schema: 'https://minimax.io/schemas/mcode-hooks/0.1.0/hooks.schema.json',
     hooks: {
-      PreToolUse: [{ command: 'node', args: ['${PLUGIN_ROOT}/io.minimax.mcode/hooks/scripts/record.mjs'] }],
-      SessionEnd: [{ command: 'node' }],
+      PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: 'node ${PLUGIN_ROOT}/io.minimax.mcode/hooks/scripts/record.mjs' }] }],
+      SessionEnd: [{ hooks: [{ command: 'node' }] }],
     },
   }, 'hooks.json');
   assert.deepEqual(events, ['PreToolUse', 'SessionEnd']);
+  // The 0.3.10 parser walks the document body and treats each
+  // value as an event entry. The body is either `value.hooks`
+  // (the wrapper) or `value` itself (events sit on the root).
+  // Both shapes are accepted and produce identical behavior.
+  const directEvents = validateHooksDocument({
+    PreToolUse: [{ hooks: [{ command: 'node' }] }],
+  }, 'hooks.json');
+  assert.deepEqual(directEvents, ['PreToolUse']);
   // Round-4 fix: $schema is now pinned, so the URL must match exactly.
   // The old "any non-empty string" check is gone, so the error message
   // also changes — we now expect "must equal" rather than letting the
@@ -87,18 +126,40 @@ test('accepts a Hooks document that targets the experimental io.minimax.mcode na
     () => validateHooksDocument({ $schema: 'x', hooks: { UnknownEvent: [{ command: 'node' }] } }, 'hooks.json'),
     /\$schema must equal/u,
   );
+  // The 0.3.10 catalog includes 15 events: 12 portable + 3
+  // streaming. Streaming events are accepted by the validator
+  // (Fwe dispatch is a runtime question).
+  const streaming = validateHooksDocument({
+    hooks: {
+      MessageComplete: [{ hooks: [{ command: 'node' }] }],
+      StreamChunk: [{ hooks: [{ command: 'node' }] }],
+      StreamChunkThreshold: [{ hooks: [{ command: 'node' }] }],
+    },
+  }, 'hooks.json');
+  assert.deepEqual(streaming, ['MessageComplete', 'StreamChunk', 'StreamChunkThreshold']);
   assert.throws(
     () => validateHooksDocument({ $schema: 'https://minimax.io/schemas/mcode-hooks/0.1.0/hooks.schema.json', hooks: { UnknownEvent: [{ command: 'node' }] } }, 'hooks.json'),
     /not a recognized event/u,
+  );
+  // The 0.2.4 flat shape is rejected because the inner descriptor
+  // is not an outer matcher entry; `command` and `args` are not
+  // in the matcher-entry allowlist.
+  assert.throws(
+    () => validateHooksDocument({
+      $schema: 'https://minimax.io/schemas/mcode-hooks/0.1.0/hooks.schema.json',
+      hooks: { PreToolUse: [{ command: 'node', args: ['x'] }] },
+    }, 'hooks.json'),
+    /not a recognized Hook field/u,
   );
   assert.throws(
     () => validateHooksDocument({ $schema: 'https://minimax.io/schemas/mcode-hooks/0.1.0/hooks.schema.json', hooks: { PreToolUse: [] } }, 'hooks.json'),
     /non-empty array/u,
   );
-  assert.throws(
-    () => validateHooksDocument({ hooks: { PreToolUse: [{ command: 'node' }] } }, 'hooks.json'),
-    /\$schema must equal/u,
-  );
+  // Without $schema, the document is still accepted — the
+  // 0.3.10 runtime silently ignores the field.
+  assert.doesNotThrow(() => validateHooksDocument({
+    hooks: { PreToolUse: [{ hooks: [{ command: 'node' }] }] },
+  }, 'hooks.json'));
 });
 
 test('validatePluginDirectory picks up an io.minimax.mode hooks extension without requiring it', async () => {
@@ -123,9 +184,11 @@ test('validatePluginDirectory picks up an io.minimax.mode hooks extension withou
     ].join('\n'), 'utf8');
     const hooksDir = path.join(root, 'io.minimax.mcode', 'hooks');
     await mkdir(hooksDir, { recursive: true });
+    // 0.3.10 nested shape: outer matcher entry wraps an inner
+    // hooks[] array of command descriptors.
     await writeFile(path.join(hooksDir, 'hooks.json'), JSON.stringify({
       $schema: 'https://minimax.io/schemas/mcode-hooks/0.1.0/hooks.schema.json',
-      hooks: { SessionStart: [{ command: 'node' }] },
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'node' }] }] },
     }));
     const result = await validatePluginDirectory(root);
     assert.deepEqual(result.clientExtensions, [{ namespace: 'io.minimax.mcode', events: ['SessionStart'] }]);
@@ -185,7 +248,7 @@ test('validatePluginDirectory rejects hooks.json with an unrecognized event', as
     await mkdir(hooksDir, { recursive: true });
     await writeFile(path.join(hooksDir, 'hooks.json'), JSON.stringify({
       $schema: 'https://minimax.io/schemas/mcode-hooks/0.1.0/hooks.schema.json',
-      hooks: { Bogus: [{ command: 'node' }] },
+      hooks: { Bogus: [{ hooks: [{ command: 'node' }] }] },
     }));
     await assert.rejects(validatePluginDirectory(root), /not a recognized event/u);
   } finally {
@@ -194,45 +257,53 @@ test('validatePluginDirectory rejects hooks.json with an unrecognized event', as
 });
 
 test('validateHookEntry rejects unknown fields (closed schema)', () => {
+  // 0.3.10 schema: outer (matcher) entry only allows {matcher, hooks[]};
+  // inner (command) descriptor only allows {type, command, timeout}.
   assert.throws(
-    () => validateHookEntry({ command: 'node', evil: 'x' }, 'hook'),
+    () => validateHookEntry({ matcher: '*', hooks: [{ command: 'node', evil: 'x' }] }, 'hook'),
     /not a recognized Hook field/u,
   );
   assert.throws(
-    () => validateHookEntry({ command: 'node', sideChannel: true }, 'hook'),
+    () => validateHookEntry({ matcher: '*', hooks: [{ command: 'node', sideChannel: true }] }, 'hook'),
+    /not a recognized Hook field/u,
+  );
+  // The previous companion's `command` at the outer level is no
+  // longer valid; the 0.3.10 parser reads it as a missing hooks[].
+  assert.throws(
+    () => validateHookEntry({ command: 'node' }, 'hook'),
     /not a recognized Hook field/u,
   );
 });
 
-// Round-4 fix: the previous regex accepted './../outside' and
-// '${PLUGIN_ROOT}/../../outside' because it only checked the
-// prefix. These tests pin the negative contract.
-test('validateHookEntry rejects cwd traversal in ./ paths (R4-1)', () => {
-  assert.throws(() => validateHookEntry({ command: 'node', cwd: './../outside' }, 'hook'),
-    /cwd must be/u);
-  assert.throws(() => validateHookEntry({ command: 'node', cwd: './foo/../../bar' }, 'hook'),
-    /cwd must be/u);
-  assert.throws(() => validateHookEntry({ command: 'node', cwd: './foo\\bar' }, 'hook'),
-    /cwd must be/u);
-  assert.throws(() => validateHookEntry({ command: 'node', cwd: '..' }, 'hook'),
-    /cwd must be/u);
-  // Sanity: a properly contained ./ path is still accepted.
-  assert.doesNotThrow(() => validateHookEntry({ command: 'node', cwd: './scripts' }, 'hook'));
-});
-
-test('validateHookEntry rejects cwd traversal in ${PLUGIN_ROOT} / ${PLUGIN_DATA} paths (R4-1)', () => {
-  assert.throws(() => validateHookEntry({ command: 'node', cwd: '${PLUGIN_ROOT}/../outside' }, 'hook'),
-    /cwd must be/u);
-  assert.throws(() => validateHookEntry({ command: 'node', cwd: '${PLUGIN_DATA}/foo/../bar/..' }, 'hook'),
-    /cwd must be/u);
-  assert.throws(() => validateHookEntry({ command: 'node', cwd: '${PLUGIN_ROOT}/foo/..' }, 'hook'),
-    /cwd must be/u);
-  // Sanity: contained paths still accepted.
-  assert.doesNotThrow(() => validateHookEntry({ command: 'node', cwd: '${PLUGIN_ROOT}/io.minimax.mcode/hooks' }, 'hook'));
-  assert.doesNotThrow(() => validateHookEntry({ command: 'node', cwd: '${PLUGIN_DATA}' }, 'hook'));
+// `cwd` was removed from the 0.3.10 schema because the parser
+// passes the single command string to the platform shell, which
+// already handles per-command working directory. The previous
+// companion's R4-1 cwd-traversal tests are replaced by a single
+// test that the field is now closed-schema-rejected (it appears
+// in HOOK_RESERVED_FIELDS, so the validator surfaces it as a
+// reserved internal discriminator).
+test('validateHookEntry rejects the 0.2.4 cwd field on inner command descriptors', () => {
+  assert.throws(
+    () => validateHookEntry({ matcher: '*', hooks: [{ command: 'node', cwd: './scripts' }] }, 'hook'),
+    /reserved internal discriminator/u,
+  );
+  assert.throws(
+    () => validateHookEntry({ matcher: '*', hooks: [{ command: 'node', cwd: '${PLUGIN_DATA}' }] }, 'hook'),
+    /reserved internal discriminator/u,
+  );
+  // `${PLUGIN_ROOT}/../etc` was the round-4 false positive on
+  // 0.2.4; the 0.3.10 schema rejects the field outright, so the
+  // path-traversal pattern is now unrepresentable.
+  assert.throws(
+    () => validateHookEntry({ matcher: '*', hooks: [{ command: 'node', cwd: '${PLUGIN_ROOT}/../etc' }] }, 'hook'),
+    /reserved internal discriminator/u,
+  );
 });
 
 test('validateMcp rejects the same cwd traversal patterns (R4-1)', () => {
+  // MCP `cwd` semantics are unchanged; this is the same negative
+  // contract as the previous companion. The 0.3.10 schema only
+  // affects the hooks namespace.
   const base = { $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json' };
   assert.throws(
     () => validateMcp({ ...base, mcpServers: { bad: { type: 'stdio', command: 'node', cwd: './../escape' } } }),
@@ -249,7 +320,7 @@ test('validateHooksDocument pins the $schema URL to the proposal (R4-3)', () => 
   assert.throws(
     () => validateHooksDocument({
       $schema: 'https://example.com/wrong/schema.json',
-      hooks: { SessionStart: [{ command: 'node' }] },
+      hooks: { SessionStart: [{ hooks: [{ command: 'node' }] }] },
     }, 'hooks.json'),
     /\$schema must equal/u,
   );
@@ -259,31 +330,106 @@ test('validateHooksDocument pins the $schema URL to the proposal (R4-3)', () => 
   assert.throws(
     () => validateHooksDocument({
       $schema: '',
-      hooks: { SessionStart: [{ command: 'node' }] },
+      hooks: { SessionStart: [{ hooks: [{ command: 'node' }] }] },
     }, 'hooks.json'),
     /\$schema must equal/u,
   );
+  // When the document omits $schema, the 0.3.10 runtime
+  // silently accepts it. The validator mirrors that.
+  assert.doesNotThrow(() => validateHooksDocument({
+    hooks: { SessionStart: [{ hooks: [{ command: 'node' }] }] },
+  }, 'hooks.json'));
 });
 
-test('validateHookEntry type-checks matcher, pattern, regex, glob, once, timeout', () => {
-  assert.throws(() => validateHookEntry({ command: 'node', matcher: 123 }, 'hook'), /matcher must be a non-empty string/u);
-  assert.throws(() => validateHookEntry({ command: 'node', pattern: '' }, 'hook'), /pattern must be a non-empty string/u);
-  assert.throws(() => validateHookEntry({ command: 'node', regex: 'yes' }, 'hook'), /regex must be a boolean/u);
-  assert.throws(() => validateHookEntry({ command: 'node', glob: 1 }, 'hook'), /glob must be a boolean/u);
-  assert.throws(() => validateHookEntry({ command: 'node', once: 'yes' }, 'hook'), /once must be a boolean/u);
-  assert.throws(() => validateHookEntry({ command: 'node', timeout: '30s' }, 'hook'), /timeout must be an integer/u);
-  assert.throws(() => validateHookEntry({ command: 'node', timeoutMs: 1 }, 'hook'), /timeoutMs must be an integer/u);
-  assert.throws(() => validateHookEntry({ command: 'node', timeoutMs: 0 }, 'hook'), /timeoutMs must be an integer/u);
+test('validateHookEntry and validateHookCommand type-check the 0.3.10 field vocabulary', () => {
+  // matcher on the outer entry must be a non-empty string when set.
+  assert.throws(
+    () => validateHookEntry({ matcher: 123, hooks: [{ command: 'node' }] }, 'hook'),
+    /matcher must be a non-empty string/u,
+  );
+  assert.throws(
+    () => validateHookEntry({ matcher: '', hooks: [{ command: 'node' }] }, 'hook'),
+    /matcher must be a non-empty string/u,
+  );
+  // command on the inner descriptor must be a non-empty string.
+  assert.throws(
+    () => validateHookEntry({ matcher: '*', hooks: [{ command: '' }] }, 'hook'),
+    /command is required/u,
+  );
+  assert.throws(
+    () => validateHookEntry({ matcher: '*', hooks: [{ command: 123 }] }, 'hook'),
+    /command is required/u,
+  );
+  // timeout must be an integer in the 1..600 seconds range; the
+  // 0.2.4 millisecond range (timeoutMs, very large numbers) is
+  // no longer valid.
+  assert.throws(
+    () => validateHookEntry({ matcher: '*', hooks: [{ command: 'x', timeout: '30s' }] }, 'hook'),
+    /timeout must be an integer/u,
+  );
+  assert.throws(
+    () => validateHookEntry({ matcher: '*', hooks: [{ command: 'x', timeout: 601 }] }, 'hook'),
+    /timeout must be an integer/u,
+  );
+  assert.throws(
+    () => validateHookEntry({ matcher: '*', hooks: [{ command: 'x', timeout: 0 }] }, 'hook'),
+    /timeout must be an integer/u,
+  );
+  // The 0.2.4 fields pattern / regex / glob / once / timeoutMs
+  // are closed-schema rejected. The validator surfaces them as
+  // "reserved" because they appeared in the 0.2.4 companion and
+  // silently no-op in 0.3.10; we want a loud failure instead.
+  for (const field of ['pattern', 'regex', 'glob', 'once', 'timeoutMs']) {
+    assert.throws(
+      () => validateHookEntry({ matcher: '*', hooks: [{ command: 'node', [field]: 'x' }] }, 'hook'),
+      /reserved internal discriminator/u,
+      `${field} must be a reserved field`,
+    );
+  }
+  // type must be the string "command" (the only kind 0.3.10
+  // dispatches); any other value is rejected. The reserved
+  // discriminators (`prompt`, `http`, `agent`, `shell`,
+  // `function`, `script`) are caught by the same check — the
+  // validator gives the more specific "type must be 'command'"
+  // error rather than the closed-schema reserved-field error,
+  // because the user provided a valid field name with an
+  // invalid value. This is intentional: the more specific
+  // message is more actionable.
+  for (const badType of ['code', 'javascript', 'CODE', 'foo', '', 'prompt', 'http', 'agent', 'shell', 'function', 'script']) {
+    assert.throws(
+      () => validateHookEntry({ matcher: '*', hooks: [{ command: 'node', type: badType }] }, 'hook'),
+      /type must be "command"/u,
+      `type=${JSON.stringify(badType)} must be rejected`,
+    );
+  }
+  // type is allowed when omitted (defaults to "command") and
+  // when explicitly "command".
+  assert.doesNotThrow(() => validateHookEntry({ matcher: '*', hooks: [{ command: 'node' }] }, 'hook'));
+  assert.doesNotThrow(() => validateHookEntry({ matcher: '*', hooks: [{ type: 'command', command: 'node' }] }, 'hook'));
 });
 
 test('validateHooksDocument rejects unknown root fields (closed schema)', () => {
+  // 0.3.10: the document body is either `value.hooks` (the
+  // wrapper) or the root itself; either way, every top-level
+  // field must be in the closed-schema allowlist. `extra` is
+  // neither a known event name nor `$schema` nor `hooks`.
   assert.throws(
     () => validateHooksDocument({
       $schema: 'https://minimax.io/schemas/mcode-hooks/0.1.0/hooks.schema.json',
-      hooks: { SessionStart: [{ command: 'node' }] },
+      hooks: { SessionStart: [{ hooks: [{ command: 'node' }] }] },
       extra: true,
     }, 'hooks.json'),
     /extra is not a recognized Hook field/u,
+  );
+  // An event name on the root is also closed-schema valid, but a
+  // typo is rejected at the root closed-schema level (the
+  // event-name check is reached only after the root has been
+  // confirmed to be a known event name or the wrapper).
+  assert.throws(
+    () => validateHooksDocument({
+      PreToolUs: [{ hooks: [{ command: 'node' }] }],
+    }, 'hooks.json'),
+    /PreToolUs is not a recognized Hook field/u,
   );
 });
 
