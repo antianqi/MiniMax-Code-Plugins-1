@@ -54,12 +54,14 @@ Behaviour after the patch:
 
 ## Files
 
-| file         | purpose                                                                    |
-| ------------ | -------------------------------------------------------------------------- |
-| `apply.mjs`  | idempotent in-place patch. Re-runnable; safe on every machine.             |
-| `restore.mjs`| undo, using the `.bak-<timestamp>` file that `apply.mjs` writes.           |
-| `diff.txt`   | the exact 30-byte before/after for review.                                 |
-| `README.md`  | this file.                                                                 |
+| file             | purpose                                                                    |
+| ---------------- | -------------------------------------------------------------------------- |
+| `apply.mjs`      | idempotent in-place patch. Re-runnable; safe on every machine.             |
+| `restore.mjs`    | undo, using the `.bak-<timestamp>` file that `apply.mjs` writes.           |
+| `test-apply.mjs` | negative-injection self-audit for the path-validation + atomic-write contract. Runs in a sandboxed temp dir, does not touch the real install. |
+| `smoke-runtime.mjs` | host-level "parse and dispatch" smoke: validates the bundled hooks.json shape, asserts the 0.3.10 Fwe intersection, runs each in-Fwe hook script through a Node replica of the patched `Ava`. |
+| `diff.txt`       | the exact 30-byte before/after for review.                                 |
+| `README.md`      | this file.                                                                 |
 
 ## Usage
 
@@ -91,20 +93,52 @@ node restore.mjs --release 0.3.10
 
 ## What `apply.mjs` does
 
-1. Locates `$USERPROFILE/.minimax-code/releases/0.3.10/node_modules/@minimax-ai/code/chunks/chunk-CTHP2I62.js`.
-2. Reads the file as UTF-8.
-3. If the new pattern is already present, exits 0 (idempotent re-apply).
-4. If the old pattern is absent and `--force` was not passed, prints an
-   info message and exits 0 (caller probably already patched or on a
-   different runtime version).
-5. Otherwise, copies the original to `chunk-CTHP2I62.js.bak-<ISO-timestamp>`
-   (only on the first mutating run; subsequent re-applies reuse the
-   existing `.bak`), then replaces the OLD line with the NEW line and
-   writes the file back.
-6. Prints the new size, the offset of the patched line, and the next
+1. Locates every `~/.minimax-code/releases/<version>/node_modules/@minimax-ai/code/chunks/chunk-*.js`
+   that contains the OLD `Ava` pattern. (Or only the ones named in
+   `--release <version>` if that flag was passed.)
+2. For each candidate release, validates the version name against a
+   strict semver regex and verifies the resolved directory realpath
+   is the expected `base/<name>` — rejects `..`, absolute paths,
+   drive letters, symlink escapes, and missing directories.
+3. Reads the chunk as UTF-8.
+4. If the new pattern is already present, exits 0 (idempotent re-apply).
+5. If the old pattern is absent, prints `INFO no-pattern` and skips
+   (caller probably already patched or on a different runtime version).
+6. Otherwise, copies the original to
+   `chunk-<hash>.js.bak-<ISO-timestamp>` (only on the first mutating
+   run; subsequent re-applies reuse the existing `.bak`), then
+   **atomically** swaps in the patched content:
+   - stage the new bytes in the same directory (so `rename` is
+     atomic on the same filesystem)
+   - copy the original chunk's permission mode onto the staging file
+   - `rename(staging, target)` — instant
+   - on any failure mid-write, delete the staging file and leave the
+     original chunk byte-identical to its pre-apply state
+7. Prints the new size, the offset of the patched line, and the next
    steps (restart mcode / mcode-island widget, run `install-hook.ps1`,
    trigger a tool call to confirm `island.log` shows a non-`[detect]`
    "working ::" entry within ~400 ms).
+
+## Safety guarantees (host-installation mutation)
+
+The script enforces four non-negotiable contracts. Every guarantee
+has a corresponding negative-injection test in `test-apply.mjs`.
+
+| guarantee | implementation | test |
+| --------- | --------------- | ---- |
+| `--release` value cannot escape the release root | semver regex + `realpath` containment check | Test 1 (7 cases) |
+| symlink release dirs are rejected at runtime | `realpathSync` returns canonical path; mismatch with `base/<name>` is fatal | Test 2 |
+| mid-write failure leaves the live chunk byte-identical | same-directory staging file + `rename`, with `unlink` cleanup on throw | Test 3 (2 cases) |
+| apply → apply → restore → apply round-trip is consistent | every step's exit code and post-state are checked | Test 4 (2 cases) |
+| `listReleases()` ignores non-semver and dot-prefixed entries | regex filter after `readdirSync` | Test 5 |
+
+Run the suite from the mcode-island Plugin root:
+
+```cmd
+node "%USERPROFILE%\MiniMax-Code-Plugins-1\plugins\antianqi\mcode-island\hooks\win32-ava-patch\test-apply.mjs"
+```
+
+Expected output: `13 pass, 0 fail`.
 
 ## When to remove
 

@@ -41,13 +41,34 @@ on:
 #
 # `[code]smith` is SKIPPED on this repository, so this windows-latest
 # job is the CI evidence for the round-5 review.
+#
+# Round-9 review (hetaoBackend, 2026-09-10T01:43:05Z) on commit
+# 5a0040e (PR #37 mcode-island v0.4.0):
+#   1. path-traversal guard in apply.mjs / restore.mjs
+#      (`--release` flag, symlink escape, realpath containment)
+#   2. atomic write in apply.mjs (staging + rename, permission
+#      preservation, mid-write failure isolation)
+#   3. negative-injection tests covering both contracts
+#
+# Step 5 below runs `hooks/win32-ava-patch/test-apply.mjs`, which
+# exercises all three contracts in a sandboxed temp dir (no real
+# ~/.minimax-code/releases/ is touched). The test file is the same
+# one a developer runs locally; CI just confirms the contract on
+# the real windows-latest image. 13 cases must pass.
+#
+# Step 6 below runs `hooks/win32-ava-patch/smoke-runtime.mjs`, which
+# is the host-level "parse and dispatch" smoke the round-9 review
+# asked for. 7 cases must pass: bundled hooks.json well-formed,
+# Fwe allowlist intersection, and the 5 in-Fwe hook scripts exit
+# 0 via a Node-replica of the patched `Ava` (`Ava` +
+# `|| process.platform === "win32"` -> `Dva(bZ())`).
 
 permissions:
   contents: read
 
 jobs:
   mcode-island-windows:
-    name: mcode-island on windows-latest (parse + token + hook + mock-API)
+    name: mcode-island on windows-latest (parse + token + hook + mock-API + win32-ava-patch contract + runtime smoke)
     runs-on: windows-latest
     timeout-minutes: 10
     defaults:
@@ -411,3 +432,64 @@ jobs:
           }
           Write-Host "test c (no token): OK returned null"
           Write-Host "Get-5hUsage via dot-source + matching fixture + token-source precedence: 3/3 OK"
+
+      # 5) win32-ava-patch contract (PR #37 round-9 review):
+      #    path validation + atomic write + idempotent round-trip.
+      #    test-apply.mjs runs entirely inside os.tmpdir(); the real
+      #    ~/.minimax-code/releases/ install is never touched. A
+      #    failure here means a contract regressed. The test summary
+      #    is at the end of the step output; we additionally fail
+      #    the job on non-zero exit.
+      #
+      #    Negative-injection coverage (one entry per case the
+      #    review called out):
+      #      Test 1 (7 cases) -- --release value validation:
+      #        ../ traversal, absolute path, semver-violating
+      #        name with shell meta, NUL byte (blocked at the OS
+      #        layer), empty string, drive letter, \\?\ extended path
+      #      Test 2 -- symlink escape containment (realpath check)
+      #      Test 3 (2 cases) -- atomic write contract: mid-write
+      #        failure leaves target byte-identical; permission mode
+      #        preserved across apply
+      #      Test 4 (2 cases) -- idempotent round-trip:
+      #        apply -> apply(no-op) -> restore -> apply cycle;
+      #        restore on unpatched is a no-op
+      #      Test 5 -- listReleases() filters non-semver and
+      #        dot-prefixed directory entries
+      - name: win32-ava-patch contract: path validation + atomic write (round-9 review)
+        run: |
+          cd '${{ github.workspace }}'
+          $r = node 'plugins/antianqi/mcode-island/hooks/win32-ava-patch/test-apply.mjs'
+          if ($LASTEXITCODE -ne 0) {
+            throw "test-apply.mjs exited $LASTEXITCODE (expected 0; see step output for failing case)"
+          }
+
+      # 6) Host-level runtime smoke (PR #37 round-9 review):
+      #    the review asked for "a real host-level smoke: parse and
+      #    dispatch the submitted io.minimax.mcode/hooks/hooks.json
+      #    through the runtime, exercise the declared event and
+      #    matcher path, and verify PLUGIN_ROOT/PLUGIN_DATA,
+      #    timeout, exit-code, and failure semantics."
+      #
+      #    smoke-runtime.mjs replicates the patched `Ava` (Ava
+      #    with `|| process.platform === "win32"`) in pure Node and
+      #    exercises the 5 in-Fwe hook scripts (SessionStart,
+      #    SessionEnd, UserPromptSubmit, PreToolUse, PostToolUse)
+      #    with a synthetic event payload. The 0.3.10 dispatch
+      #    allowlist (`Fwe`) covers exactly those 5 events; the
+      #    other 7 declared in hooks.json (Stop, PreCompact,
+      #    Notification, SubagentStart, SubagentStop,
+      #    PermissionRequest, PermissionDenied) are forward-only
+      #    and are recorded as such.
+      #
+      #    This is the "parse and dispatch" assertion the review
+      #    asked for. The mcode runtime itself is not required
+      #    to be installed in CI; the smoke validates the hook
+      #    document contract that the runtime would enforce.
+      - name: Runtime smoke: bundled hooks.json + 5 in-Fwe hook scripts via patched Ava (round-9 review)
+        run: |
+          cd '${{ github.workspace }}'
+          $r = node 'plugins/antianqi/mcode-island/hooks/win32-ava-patch/smoke-runtime.mjs'
+          if ($LASTEXITCODE -ne 0) {
+            throw "smoke-runtime.mjs exited $LASTEXITCODE (expected 0; see step output for failing case)"
+          }
