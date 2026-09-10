@@ -11,8 +11,13 @@
 //   that ship a different shape (e.g. upstream finally adds the
 //   platform branch) will be silently skipped.
 //
-//   --release <version>  restrict to one release (repeatable). If
-//                        omitted, scans every release directory.
+//   --release <version>  restrict to one release (repeatable). The
+//                        version value is matched against a strict
+//                        semver regex and the resolved path is
+//                        checked for containment under the release
+//                        root (no ../, no absolute, no symlink escape).
+//                        If you want to ignore this and write outside
+//                        the boundary, you are using the wrong tool.
 //
 // Background.
 //   mcode 0.3.x's hook dispatcher (Ava in chunk-CTHP2I62.js /
@@ -38,8 +43,13 @@
 //   - If the NEW pattern is already present, the chunk is recorded
 //     as already-patched and the script does not write a duplicate
 //     .bak.
-//   - Otherwise, applies the patch, writes a .bak-<ISO-timestamp>
-//     next to the chunk, and prints a one-line summary per chunk.
+//   - Otherwise, applies the patch via an atomic staging-file + rename
+//     (preserves the file mode of the original chunk). The first
+//     time apply.mjs mutates a file, it copies the pre-patch bytes
+//     to <name>.bak-<ISO-timestamp> next to the chunk; restore.mjs
+//     uses that backup. The staging file is removed on any failure
+//     so a partial write can never leave the live chunk in a
+//     truncated state.
 //
 // Risk and durability.
 //   - Touches node_modules; will be overwritten by the next
@@ -47,6 +57,11 @@
 //   - A backup of the original chunk is written next to it
 //     (chunk-<hash>.js.bak-<timestamp>) the first time apply.mjs
 //     mutates the file. restore.mjs uses that backup.
+//   - The live chunk is only ever replaced by an atomic rename of a
+//     same-directory staging file that already carries the chunk's
+//     original permission mode. A process interrupt, ENOSPC, or any
+//     other write-time failure leaves the original chunk byte-
+//     identical to its pre-apply state.
 //
 // Usage:
 //   node apply.mjs                       # patch every release with the OLD pattern
@@ -62,6 +77,11 @@ const OLD = 't.usePlatformShell?Dva(a,bZ()):{executable:"/bin/sh",args:["-lc",a]
 const NEW = '(t.usePlatformShell||process.platform==="win32")?Dva(a,bZ()):{executable:"/bin/sh",args:["-lc",a]}';
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+// Strict semver-ish: X.Y.Z with optional -prerelease.tag. Rejects
+// anything containing path separators, "..", absolute-path prefixes,
+// or shell metacharacters, before the script ever touches a path.
+const RELEASE_NAME_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$/;
+
 const argv = process.argv.slice(2);
 const force = argv.includes('--force');
 const releaseArgs = [];
@@ -75,27 +95,84 @@ function releaseBase() {
   return path.join(os.homedir(), '.minimax-code', 'releases');
 }
 
+// Validates a release name and resolves its absolute path, with
+// containment under the release base. Rejects:
+//   - any name not matching the semver regex (../, absolute paths,
+//     drive letters, NUL bytes, etc. all fail the regex)
+//   - any path that does not exist as a directory
+//   - any directory whose realpath is not the expected base/<name>
+//     (catches symlink escapes)
+function resolveReleaseDir(release) {
+  if (typeof release !== 'string' || !RELEASE_NAME_RE.test(release)) {
+    throw new Error(`Invalid release name: ${JSON.stringify(release)} (must match ${RELEASE_NAME_RE})`);
+  }
+  const baseReal = fs.realpathSync(releaseBase());
+  const target = path.join(baseReal, release);
+  let targetReal;
+  try {
+    targetReal = fs.realpathSync(target);
+  } catch (e) {
+    if (e.code === 'ENOENT') return null;  // not installed; let caller decide
+    throw e;
+  }
+  const expected = path.join(baseReal, release);
+  if (targetReal !== expected) {
+    throw new Error(`Release path escapes base: ${targetReal} is not under ${expected}`);
+  }
+  const st = fs.statSync(targetReal);
+  if (!st.isDirectory()) {
+    throw new Error(`Release path is not a directory: ${targetReal}`);
+  }
+  return targetReal;
+}
+
 function listReleases() {
   const base = releaseBase();
   if (!fs.existsSync(base)) return [];
   return fs.readdirSync(base, { withFileTypes: true })
     .filter((d) => d.isDirectory())
     .map((d) => d.name)
-    .filter((n) => /^[0-9]+\.[0-9]+\.[0-9]+/.test(n))
+    .filter((n) => RELEASE_NAME_RE.test(n))  // defense in depth
     .sort();
 }
 
 function findChunkForRelease(release) {
-  const chunksDir = path.join(releaseBase(), release, 'node_modules', '@minimax-ai', 'code', 'chunks');
+  // validate first; throws on bad names so a malicious --release
+  // value cannot reach the disk read path
+  const releaseDir = resolveReleaseDir(release);
+  if (!releaseDir) return null;
+  const chunksDir = path.join(releaseDir, 'node_modules', '@minimax-ai', 'code', 'chunks');
   if (!fs.existsSync(chunksDir)) return null;
   const files = fs.readdirSync(chunksDir).filter((f) => f.startsWith('chunk-') && f.endsWith('.js'));
   for (const f of files) {
     const full = path.join(chunksDir, f);
+    let realFull;
+    try { realFull = fs.realpathSync(full); } catch { continue; }
+    if (!realFull.startsWith(releaseDir + path.sep)) continue;  // belt + braces
     let content;
-    try { content = fs.readFileSync(full, 'utf8'); } catch { continue; }
-    if (content.includes(OLD) || content.includes(NEW)) return full;
+    try { content = fs.readFileSync(realFull, 'utf8'); } catch { continue; }
+    if (content.includes(OLD) || content.includes(NEW)) return realFull;
   }
   return null;
+}
+
+// Atomic same-directory write: stage the new contents in a temp file
+// that already carries the original target's permission mode, then
+// rename over the target. If anything throws, the staging file is
+// removed and the original target is left byte-identical.
+function atomicWriteFileSync(target, data) {
+  const dir = path.dirname(target);
+  const base = path.basename(target);
+  const staging = path.join(dir, `${base}.staging-${process.pid}-${Date.now()}`);
+  try {
+    fs.writeFileSync(staging, data, 'utf8');
+    const targetStat = fs.statSync(target);
+    fs.chmodSync(staging, targetStat.mode);
+    fs.renameSync(staging, target);
+  } catch (e) {
+    try { if (fs.existsSync(staging)) fs.unlinkSync(staging); } catch {}
+    throw e;
+  }
 }
 
 function applyOne(chunkPath) {
@@ -131,7 +208,7 @@ function applyOne(chunkPath) {
     result.status = 'replace-failed';
     return result;
   }
-  fs.writeFileSync(chunkPath, patched, 'utf8');
+  atomicWriteFileSync(chunkPath, patched);
   result.status = 'patched';
   result.bak = bakPath;
   result.size = fs.statSync(chunkPath).size;
@@ -148,7 +225,13 @@ function main() {
 
   const results = [];
   for (const rel of releases) {
-    const chunk = findChunkForRelease(rel);
+    let chunk = null;
+    try {
+      chunk = findChunkForRelease(rel);
+    } catch (e) {
+      results.push({ release: rel, status: 'invalid', error: e.message });
+      continue;
+    }
     if (!chunk) {
       results.push({ release: rel, status: 'no-chunk' });
       continue;
@@ -159,16 +242,16 @@ function main() {
   }
 
   for (const r of results) {
-    const tag = (s) => ({ 'patched': 'OK patched', 'already-patched': 'OK already-patched', 'no-pattern': 'INFO no-pattern', 'no-chunk': 'INFO no-chunk', 'replace-failed': 'FAIL replace-failed' }[s] || s);
+    const tag = (s) => ({ 'patched': 'OK patched', 'already-patched': 'OK already-patched', 'no-pattern': 'INFO no-pattern', 'no-chunk': 'INFO no-chunk', 'invalid': 'FAIL invalid', 'replace-failed': 'FAIL replace-failed' }[s] || s);
     const line = `${tag(r.status).padEnd(20)} ${r.release}`;
     const extra = r.status === 'patched' ? ` (size=${r.size}, offset=${r.offset}, bak=${path.basename(r.bak)})` :
-                   r.status === 'no-pattern' && force ? ' --force given; would be a problem' : '';
+                   r.status === 'invalid' ? ` (${r.error})` : '';
     console.log(line + extra);
   }
 
-  const errors = results.filter((r) => r.status === 'replace-failed' || r.status === 'no-pattern').length;
-  if (errors > 0 && force) {
-    console.error(`FAIL: ${errors} release(s) could not be processed; --force was set so exiting 2.`);
+  const errors = results.filter((r) => r.status === 'replace-failed' || (r.status === 'no-pattern' && force) || r.status === 'invalid').length;
+  if (errors > 0 && (force || results.some((r) => r.status === 'invalid' || r.status === 'replace-failed'))) {
+    console.error(`FAIL: ${errors} release(s) could not be processed.`);
     process.exit(2);
   }
   if (results.every((r) => r.status === 'no-chunk' || r.status === 'no-pattern' || r.status === 'already-patched')) {
