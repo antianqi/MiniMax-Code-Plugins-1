@@ -8,6 +8,13 @@ export const MCP_SCHEMA = 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.js
 // non-empty string, which meant a plugin could claim a different
 // schema than the proposal. Locking the URL means the validator
 // can now reject drafts that don't match the published spec.
+//
+// This contract is the same on @minimax-ai/code@0.3.10 (the
+// release that first shipped the nested shape) and on
+// @minimax-ai/code@0.3.11 (the current latest; 0.3.11 only
+// changes a 401-token retry fix; the hook schema, the Ava
+// dispatch wrapper, the Fwe allowlist, and the Uwe parser are
+// byte-identical). Re-verified on a 0.3.11 install at 2026-09-10.
 export const HOOK_SCHEMA = 'https://minimax.io/schemas/mcode-hooks/0.1.0/hooks.schema.json';
 
 const PLUGIN_NAME = /^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/u;

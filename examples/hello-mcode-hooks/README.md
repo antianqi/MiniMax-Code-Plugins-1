@@ -2,7 +2,10 @@
 
 A minimal Plugin that ships one Skill and one experimental `io.minimax.mcode` Hook entry under
 the Agent Plugins 1.0 portable Hooks preview, conformant to the `@minimax-ai/code@0.3.10`
-runtime hook schema.
+runtime hook schema and inherited unchanged by `@minimax-ai/code@0.3.11` (the only
+0.3.10 -> 0.3.11 change is a 401-token retry fix; the hook schema, the `Ava`
+dispatch wrapper, the `Fwe` allowlist, and the `Uwe` parser are byte-identical).
+Re-verified on a 0.3.11 install at 2026-09-10.
 
 ## What this example demonstrates
 

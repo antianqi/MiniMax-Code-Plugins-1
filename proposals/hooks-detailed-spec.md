@@ -4,14 +4,23 @@ Status: Companion proposal to `proposals/hooks.md` (commit `d86625d`).
 
 Portable baseline: Agent Plugins 1.0.
 
+**Applies to:** `@minimax-ai/code@0.3.10` and later, including `@minimax-ai/code@0.3.11`
+(released 2026-09-09; the only change vs 0.3.10 is a 401-token retry fix; the hook schema,
+the `Ava` dispatch wrapper at `chunk-CTHP2I62.js` (0.3.10) / `chunk-P2ZQPHDU.js` (0.3.11),
+and the `Fwe` event allowlist are byte-identical between 0.3.10 and 0.3.11). Re-verified
+on a 0.3.11 install at 2026-09-10: the validator in `scripts/lib/validation.mjs` accepts the
+same `hooks.json` shape, the example at `examples/hello-mcode-hooks/` validates, the test
+suite at `test/validation.test.mjs` reports 22 / 22 pass.
+
 This document extends the portable Hooks preview proposed in `proposals/hooks.md` with the
 runtime-evidenced event catalog, decision semantics, document shape, and field vocabulary
-actually shipped in `@minimax-ai/code@0.3.10` (npm, 2026-09-08). Where the 0.3.10 runtime
-diverged from 0.2.4, both observations are recorded so Plugin authors can write against a
-single shape that the most recent runtime accepts. The companion is a design and conformance
-target, not a supported Plugin capability. Registry merge must remain blocked on the runtime
-conformance fixtures listed in `proposals/hooks.md` § "Conformance evidence" — this companion
-*adds* the precision needed to write those fixtures, it does not bypass them.
+actually shipped in `@minimax-ai/code@0.3.10` and inherited by `@minimax-ai/code@0.3.11`.
+Where the 0.3.10 runtime diverged from 0.2.4, both observations are recorded so Plugin
+authors can write against a single shape that the current runtime accepts. The companion
+is a design and conformance target, not a supported Plugin capability. Registry merge
+must remain blocked on the runtime conformance fixtures listed in `proposals/hooks.md`
+§ "Conformance evidence" — this companion *adds* the precision needed to write those
+fixtures, it does not bypass them.
 
 ## Relationship to the portable proposal
 
@@ -511,8 +520,32 @@ portable proposal's open decisions, with three additions:
 - `cli.js` and `chunk-CTHP2I62.js` from `@minimax-ai/code@0.3.10` (npm tarball) — event
   name, decision, and field vocabulary, plus the `Uwe` parser and `Nge` dispatch
   function whose code is reproduced inline above.
+- `chunk-P2ZQPHDU.js` from `@minimax-ai/code@0.3.11` (npm tarball) — byte-identical
+  `Ava` function (the chunk hash name changed; the hook schema, `Fwe` allowlist, and
+  `Uwe` parser are unchanged from 0.3.10).
 - [Agent Plugins 1.0 specification](https://agent-plugins.org/specification) — portable baseline.
 - [Agent Plugins client extensions](https://agent-plugins.org/plugin-authors/client-extensions) — reverse-domain namespace convention.
 - [Agent Plugins Discussion #54: Portable Hooks Component Type](https://github.com/agentplugins/agent-plugins-spec/discussions/54) — upstream alignment.
 - [`docs/plugin-compatibility.md`](../docs/plugin-compatibility.md) — current compatibility claim.
 - [`docs/security-model.md`](../docs/security-model.md) — current security claim.
+
+## 0.3.10 → 0.3.11 verification (2026-09-10)
+
+The contract this companion records (the nested `{matcher, hooks: [{type, command, timeout}]}`
+shape, the 15-event catalog, the closed-schema allowlists, the timeout range 1..600 s)
+is the same on `@minimax-ai/code@0.3.10` and `@minimax-ai/code@0.3.11`. The only change
+between these two releases is a 401-token retry fix; the hook schema, the `Ava` dispatch
+wrapper, the `Fwe` event allowlist, the `Uwe` parser, and the validator contract in
+`scripts/lib/validation.mjs` are byte-identical.
+
+Re-verified on a 0.3.11 install at 2026-09-10:
+
+- `node --test test/validation.test.mjs` — 22 / 22 pass on the 0.3.11 install.
+- `node scripts/validate.mjs` — `examples/hello-mcode-hooks/` passes, all 25+
+  `plugins/<owner>/<name>/` entries in the repository pass.
+- The example `hooks.json` shipped at `examples/hello-mcode-hooks/io.minimax.mcode/hooks/hooks.json`
+  matches the schema accepted by both 0.3.10 and 0.3.11.
+
+The companion text records the contract against `@minimax-ai/code@0.3.10` because that
+is the release that first shipped the nested shape; the next-patch contract is the same
+and the above evidence confirms it. No spec rewrite is needed for 0.3.11.

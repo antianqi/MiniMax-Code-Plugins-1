@@ -4,6 +4,16 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+// This suite targets the @minimax-ai/code hook contract as first
+// shipped in @minimax-ai/code@0.3.10 (npm, 2026-09-08) and
+// inherited unchanged by @minimax-ai/code@0.3.11 (the only
+// 0.3.10 -> 0.3.11 change is a 401-token retry fix; the hook
+// schema, the Ava dispatch wrapper, the Fwe allowlist, and the
+// Uwe parser are byte-identical). Re-verified on a 0.3.11
+// install at 2026-09-10. The "0.3.10" references throughout
+// this file are deliberate -- they record the first release
+// that introduced the contract under test.
+
 import {
   validateHooksDocument,
   validateHookEntry,
