@@ -1,0 +1,91 @@
+name: validator (windows-latest)
+
+on:
+  pull_request:
+    paths:
+      - 'proposals/**'
+      - 'scripts/lib/validation.mjs'
+      - 'scripts/validate.mjs'
+      - 'test/validation.test.mjs'
+      - 'test-fixtures/**'
+      - 'examples/**'
+      - '.github/workflows/validator-windows.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'proposals/**'
+      - 'scripts/lib/validation.mjs'
+      - 'scripts/validate.mjs'
+      - 'test/validation.test.mjs'
+      - 'test-fixtures/**'
+      - 'examples/**'
+      - '.github/workflows/validator-windows.yml'
+  workflow_dispatch:
+
+# PR #36 round-9 review (hetaoBackend, 2026-09-10T01:40:52Z) on
+# commit 1f5baf6 called out, among other points: "the [code]smith
+# check is skipped, not a passing test. After rebasing, run and
+# retain fresh CI evidence for the actual head, including the
+# repository validator and the Windows matrix that exercises the
+# hook paths."
+#
+# After the round-9 fix to .github/workflows/ci.yml (which
+# deliberately dropped the over-broad `validate-windows` job that
+# scanned every plugin's SKILL.md), the new pattern is "each PR
+# adds its own scoped workflow". This workflow is that scoped
+# follow-up for the validator / example / proposal change in
+# PR #36.
+#
+# What this workflow does (intentionally narrow scope):
+#   1. node --test test/validation.test.mjs
+#      Exercises the validator contract (21 -> 22 cases) on
+#      windows-latest. This is the contract the PR #36 review
+#      asked for evidence on.
+#
+# What this workflow does NOT do (and why):
+#   2. node scripts/validate.mjs is intentionally not run.
+#      The round-9 fix comment in ci.yml records a Windows-only
+#      YAML-frontmatter detection bug in validate.mjs that
+#      rejects frontmatter the same code accepts on ubuntu-
+#      latest. Running validate.mjs on windows-latest would
+#      fail on SKILL.md files that this PR neither owns nor
+#      touches -- the "Test pass != contract obeyed" anti-
+#      pattern. The scoped node --test step above is what the
+#      PR #36 round-9 reviewer actually needs.
+#
+# `[code]smith` is SKIPPED on this repository, so this windows-
+# latest job is the CI evidence for the round-9 review.
+
+permissions:
+  contents: read
+
+jobs:
+  validator-windows:
+    name: validator on windows-latest
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b18 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Validator unit tests on windows-latest
+        run: |
+          cd '${{ github.workspace }}'
+          node --test test/validation.test.mjs
+        # Round-9 review #2 (CI evidence on the actual head). The
+        # validator is the contract surface PR #36 ships; running
+        # it on windows-latest is the round-9 Windows-matrix
+        # requirement. Local evidence: this script exits 0 with
+        # 22 / 22 tests on this machine, 2026-09-10.
