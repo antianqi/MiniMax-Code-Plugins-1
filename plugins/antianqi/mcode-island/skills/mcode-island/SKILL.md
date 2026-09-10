@@ -1,6 +1,16 @@
 ---
 name: mcode-island
 description: Push the user's terminal out of focus to a Windows desktop Dynamic Island pill so the user can watch your work without switching back to mcode. On mcode 0.3.10+ with the `io.minimax.mcode` Hooks extension enabled (aligned with MiniMax-Code-Plugins PR #36 nested `{matcher, hooks:[{type, command, timeout}]}` schema), five tool lifecycle events fire scripts under `io.minimax.mcode/hooks/scripts/` automatically — the agent does not need to push states manually. Caveat: on mcode 0.3.10 the runtime spawns commands via `/bin/sh -lc` which ENOENTs on Windows, so Mode A does not actually fire on Windows until the runtime sets `usePlatformShell: true`; until then, fall back to calling `notify-island.ps1` before and after each tool call, or use `wrap-tool.ps1` for the bash path. To make Mode A work as soon as the runtime is fixed on Windows, run `install-hook.ps1` once after install — it copies the bundled `io.minimax.mcode/hooks/hooks.json` into `${MINIMAX_DATA_DIR}/hooks/hooks.json` (or `…/agents/<agent>/hooks/hooks.json`) because the runtime does not read the Plugin's own `io.minimax.mcode/` path.
+
+> **Caveat (mcode 0.3.10 on Windows):** the 0.3.10 hook dispatcher
+> (`Ava` in `@minimax-ai/code@0.3.10`, `chunk-CTHP2I62.js:6553263`) spawns
+> commands via `/bin/sh -lc` with `usePlatformShell: false`. `Node.spawn('/bin/sh', ...)`
+> returns `ENOENT` on a stock Windows install (no Git Bash, no MSYS, no WSL
+> shim), so even the 5 events that *would* dispatch will not actually fire
+> on Windows 0.3.10. The hook document is correct and the install step
+> succeeds, but no script will run until upstream sets
+> `usePlatformShell: true` on Windows (or ships a Windows-aware shell
+> wrapper). Track the upstream issue; use Mode B in the meantime.
 license: Apache-2.0
 compatibility: Requires Windows 10/11 with PowerShell 5.1+ and the mcode-island widget running (started via `mcode-island start` or `autostart.ps1 -Enable`). Hook-driven mode additionally requires mcode 0.3.10+ with the `io.minimax.mcode` extension namespace accepted by the registry validator, AND `install-hook.ps1` having been run at least once to materialise the hook document in the runtime-resolved dataDir. On Windows 0.3.10, Mode A is currently non-functional due to an upstream `/bin/sh` dispatch bug; use Mode B.
 metadata:
@@ -247,6 +257,12 @@ mcode-island/
 ├── pin-island.ps1                    # lock focus target to foreground
 ├── autostart.ps1                     # register/unregister Windows logon
 ├── install-hook.ps1                  # copy hooks.json into ${MINIMAX_DATA_DIR} (Mode A, 0.3.10)
+├── hooks/
+│   └── win32-ava-patch/              # Windows 0.3.10 runtime workaround (see README)
+│       ├── apply.mjs                 #   idempotent in-place patch
+│       ├── restore.mjs               #   undo using .bak file
+│       ├── diff.txt                  #   exact byte-level diff
+│       └── README.md
 ├── notify-island.ps1                 # state-push helper (agents call this)
 ├── wrap-tool.ps1                     # all-in-one bash wrapper
 ├── mcode-status-detect.ps1           # runtime-state detector
@@ -289,6 +305,12 @@ mcode-island/
   install. The hook document is correct and `install-hook.ps1` succeeds, but
   no script will run until upstream sets `usePlatformShell: true` on Windows.
   Track the upstream issue; use Mode B in the meantime.
+  A local workaround is shipped at
+  `hooks/win32-ava-patch/apply.mjs` — it adds the missing
+  `process.platform === "win32"` branch in the runtime's `Ava` spawn wrapper
+  (single line, +30 bytes, idempotent) so the existing Windows-aware shell
+  detector (`bZ` / `YO`) is actually used. See `hooks/win32-ava-patch/README.md`
+  for the full procedure. Re-run after every `npm install -g @minimax-ai/code`.
 - `install-hook.ps1` only materialises the hook document in
   `${MINIMAX_DATA_DIR}/hooks/hooks.json`. Until the runtime learns to read
   `plugin.json`'s `extensions.io.minimax.mcode.hooks` field, you must run
