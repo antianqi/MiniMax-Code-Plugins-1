@@ -131,13 +131,19 @@ $callerData = [PSCustomObject]@{
   ts          = $ts
 }
 
-# 原子写
+# 原子写。Encoding.UTF8 = .NET 的 [System.Text.Encoding]::UTF8
+# (静态),它在每个文件开头写 BOM (0xEF 0xBB 0xBF)。PowerShell 的
+# ConvertFrom-Json 能吃 BOM,但 Node / 浏览器 / 其他非 PS 消费者
+# 全部被 BOM 阻断,JSON.parse 报 "Unexpected token \uFEFF" 或
+# "Unexpected token '' is not valid JSON"。New-Object
+# System.Text.UTF8Encoding($false) 显式不写 BOM。
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $tmpStatus = "$statusFile.tmp"
 $tmpCaller = "$callerFile.tmp"
 try {
-  [System.IO.File]::WriteAllText($tmpStatus, $payload, [System.Text.Encoding]::UTF8)
+  [System.IO.File]::WriteAllText($tmpStatus, $payload, $utf8NoBom)
   Move-Item -Path $tmpStatus -Destination $statusFile -Force
-  [System.IO.File]::WriteAllText($tmpCaller, ($callerData | ConvertTo-Json -Compress), [System.Text.Encoding]::UTF8)
+  [System.IO.File]::WriteAllText($tmpCaller, ($callerData | ConvertTo-Json -Compress), $utf8NoBom)
   Move-Item -Path $tmpCaller -Destination $callerFile -Force
   Write-Output "OK: $State - $Message"
   if ($focusInfo) {
