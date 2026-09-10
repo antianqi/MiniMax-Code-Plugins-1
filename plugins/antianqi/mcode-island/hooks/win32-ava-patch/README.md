@@ -63,18 +63,30 @@ Behaviour after the patch:
 
 ## Usage
 
+The script auto-detects every installed mcode release under
+`~/.minimax-code/releases/*` and patches any whose `Ava` function still
+contains the OLD pattern. Verified on 0.3.10 (`chunk-CTHP2I62.js`) and
+0.3.11 (`chunk-P2ZQPHDU.js`); both share the same `Ava` function and
+both get patched to the same +30 bytes at the same offset 6553220.
+
 ```cmd
-:: One-time per mcode 0.3.10 install (or after every npm install -g @minimax-ai/code):
+:: Patch every installed mcode release (recommended):
 node "%USERPROFILE%\MiniMax-Code-Plugins-1\plugins\antianqi\mcode-island\hooks\win32-ava-patch\apply.mjs"
+
+:: Restrict to one release:
+node apply.mjs --release 0.3.11
+node apply.mjs --release 0.3.10 --release 0.3.11
 ```
 
 Re-run after every mcode upgrade. `apply.mjs` is idempotent — running
-it twice is a no-op the second time.
+it twice is a no-op the second time; running it on a release that
+upstream has already fixed is silently skipped.
 
-To undo:
+To undo (one release or all):
 
 ```cmd
 node "%USERPROFILE%\MiniMax-Code-Plugins-1\plugins\antianqi\mcode-island\hooks\win32-ava-patch\restore.mjs"
+node restore.mjs --release 0.3.10
 ```
 
 ## What `apply.mjs` does
@@ -96,12 +108,14 @@ node "%USERPROFILE%\MiniMax-Code-Plugins-1\plugins\antianqi\mcode-island\hooks\w
 
 ## When to remove
 
-When `@minimax-ai/code@0.3.11` (or any later release) ships with the
-same one-line fix upstream. Detect by running `apply.mjs`; if it
-prints "OK: patch already applied", the upstream has either not fixed
-it yet or the runtime version has been replaced. Confirm by checking
-`npm view @minimax-ai/code version` and reading the chunk for the
-`process.platform === "win32"` substring.
+When `@minimax-ai/code` ships the same one-line fix upstream. Detect
+by running `apply.mjs`; if every release prints `OK already-patched`
+without you having run it, the upstream has been fixed. Confirm by
+reading any chunk for the `process.platform === "win32"` substring.
+
+(0.3.10 and 0.3.11 both still have the bug; the upstream CHANGELOG
+for 0.3.11 only mentions a 401-token fix and is silent on
+hooks / Windows.)
 
 ## Empirical evidence (this machine, 2026-09-10)
 
@@ -133,6 +147,12 @@ PASS: Dva(bZ()) path works on Windows 0.3.10
 `[detect]` prefix, ~2 s after the test starts, confirming the chain
 `Ava → Dva(bZ()) → pwsh.exe → pre-tool-use.ps1 → notify-island.ps1 →
 status.json` runs end-to-end.
+
+**Re-verified on mcode 0.3.11** (chunk-P2ZQPHDU.js, same Ava function
+byte-identical to 0.3.10). Upstream 0.3.11's CHANGELOG only mentions
+a 401-token fix; the hook dispatcher bug is unfixed. The patch from
+this directory applies cleanly to 0.3.11 and produces the same +
+30 bytes at the same offset 6553220.
 
 ## Risk
 
