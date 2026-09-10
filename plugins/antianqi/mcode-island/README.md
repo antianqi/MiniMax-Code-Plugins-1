@@ -35,36 +35,41 @@ lifecycle Hooks. When the registry accepts it (companion proposal:
 [`MiniMax-Code-Plugins` PR #36](https://github.com/MiniMax-AI/MiniMax-Code-Plugins/pull/36),
 the 0.3.10-runtime-compat follow-up to the original
 [PR #20](https://github.com/MiniMax-AI/MiniMax-Code-Plugins/pull/20)),
-the runtime spawns a script from this plugin for every matching event:
+the runtime spawns a script from this plugin for every matching event.
+**Verified on `@minimax-ai/code@0.3.10` (chunk-CTHP2I62.js) and
+`@minimax-ai/code@0.3.11` (chunk-P2ZQPHDU.js); the hook schema, the
+`Ava` dispatch wrapper, the `Fwe` allowlist, and the `Uwe` parser are
+byte-identical between the two releases.**
 
-| event             | pill state  | script                          | 0.3.10 dispatch |
-| ----------------- | ----------- | ------------------------------- | --------------- |
+| event             | pill state  | script                          | 0.3.10 / 0.3.11 dispatch |
+| ----------------- | ----------- | ------------------------------- | ----------------------- |
 | `SessionStart`    | `idle`      | `session-start.ps1`             | yes (`Fwe` set) |
 | `SessionEnd`      | `idle`      | `session-end.ps1`               | yes (`Fwe` set) |
 | `UserPromptSubmit`| `thinking`  | `user-prompt-submit.ps1`        | yes (`Fwe` set) |
 | `PreToolUse`      | `working`   | `pre-tool-use.ps1`              | yes (`Fwe` set) |
 | `PostToolUse`     | `done`/`error` | `post-tool-use.ps1`          | yes (`Fwe` set) |
-| `Stop`            | `done`      | `stop.ps1`                      | **forward** — not in 0.3.10 `Fwe` set |
-| `PreCompact`      | `thinking`  | `pre-compact.ps1`               | **forward** — not in 0.3.10 `Fwe` set |
-| `Notification`    | `idle`      | `notification.ps1`              | **forward** — not in 0.3.10 `Fwe` set |
-| `SubagentStart`   | `working` (CODEX only) | `subagent-start.ps1` | **forward** — not in 0.3.10 `Fwe` set |
-| `SubagentStop`    | `done` (CODEX only)    | `subagent-stop.ps1`  | **forward** — not in 0.3.10 `Fwe` set |
-| `PermissionRequest`| `waiting`  | `permission-request.ps1`        | **forward** — not in 0.3.10 `Fwe` set |
-| `PermissionDenied`| `error`     | `permission-denied.ps1`         | **forward** — not in 0.3.10 `Fwe` set |
+| `Stop`            | `done`      | `stop.ps1`                      | **forward** — not in 0.3.10 / 0.3.11 `Fwe` set |
+| `PreCompact`      | `thinking`  | `pre-compact.ps1`               | **forward** — not in 0.3.10 / 0.3.11 `Fwe` set |
+| `Notification`    | `idle`      | `notification.ps1`              | **forward** — not in 0.3.10 / 0.3.11 `Fwe` set |
+| `SubagentStart`   | `working` (CODEX only) | `subagent-start.ps1` | **forward** — not in 0.3.10 / 0.3.11 `Fwe` set |
+| `SubagentStop`    | `done` (CODEX only)    | `subagent-stop.ps1`  | **forward** — not in 0.3.10 / 0.3.11 `Fwe` set |
+| `PermissionRequest`| `waiting`  | `permission-request.ps1`        | **forward** — not in 0.3.10 / 0.3.11 `Fwe` set |
+| `PermissionDenied`| `error`     | `permission-denied.ps1`         | **forward** — not in 0.3.10 / 0.3.11 `Fwe` set |
 
 **Forward events (7 of 12):** the spec reserves these in
 `proposals/hooks-detailed-spec.md` and this plugin ships a script for
-each, but the mcode 0.3.10 runtime allowlist (`Fwe` set in
-`@minimax-ai/code@0.3.10`, `chunk-CTHP2I62.js:1843`) does not yet dispatch
-them. The 0.3.10 runtime treats unknown event names as no-op. Once a
-future mcode release adds the dispatch, the same `.ps1` files start firing
-without any code change here. The smoke test
+each, but the mcode 0.3.10 / 0.3.11 runtime allowlist (`Fwe` set in
+`@minimax-ai/code@0.3.10`, `chunk-CTHP2I62.js:1843`, byte-identical in
+`@minimax-ai/code@0.3.11`'s `chunk-P2ZQPHDU.js`) does not yet dispatch
+them. The 0.3.10 / 0.3.11 runtime treats unknown event names as no-op.
+Once a future mcode release adds the dispatch, the same `.ps1` files
+start firing without any code change here. The smoke test
 (`scripts/smoke.mjs`) tags these as `WARN` rather than `FAIL` for that
 reason — the **plugin is correct, the runtime is not yet ready**.
 
-If you need any of these events on 0.3.10 today, the supported fallback
-is to call `notify-island.ps1` from the agent (Mode B) at the moment
-you would otherwise rely on the event firing. The wrapper
+If you need any of these events on 0.3.10 / 0.3.11 today, the supported
+fallback is to call `notify-island.ps1` from the agent (Mode B) at the
+moment you would otherwise rely on the event firing. The wrapper
 `wrap-tool.ps1` covers the `Bash` path automatically.
 
 The agent does not need to remember to push state — the runtime fires the
@@ -162,7 +167,7 @@ alternative:
 
 1. **Install** — copy this folder into your `~/.minimax/plugins/mcode-island/`
    (or any directory you want; the scripts only need to live together).
-2. **(Mode A only) Materialise the hook document** — the 0.3.10 runtime
+2. **(Mode A only) Materialise the hook document** — the 0.3.10+ runtime
    reads `${MINIMAX_DATA_DIR}/hooks/hooks.json`, not the Plugin's own
    `io.minimax.mcode/` path. Run once after install (and after every mcode
    upgrade that changes the bundled document):
@@ -243,7 +248,7 @@ binary, no symlink, no `node_modules`.
 | Windows           | 10 1809+ or 11 (uses WPF, `user32` `kernel32`)        |
 | PowerShell        | 5.1 (ships with Windows 10/11) or PowerShell 7        |
 | .NET WPF runtime  | 4.x (ships with Windows 10/11)                        |
-| mcode             | any version (Mode B works everywhere); 0.3.10+ activates Mode A (with the Windows caveat below) |
+| mcode             | any version (Mode B works everywhere); 0.3.10+ (verified on 0.3.10 and 0.3.11) activates Mode A (with the Windows caveat below) |
 | execution policy  | `Bypass` for this directory; not changed globally    |
 | network access    | **optional** — see "Network access" below. The widget itself is offline. `mcode-status-detect.ps1` only contacts `https://api.minimax.io/v1/coding_plan/remains` when a token is configured (see "Accounts" + "Data use"). |
 | accounts          | **optional** — see "Accounts" below. No account is required to run the widget; a token is only needed if you want the optional 5-hour usage readout in the pill. |
@@ -376,22 +381,28 @@ a live MiniMax Code session. Empirical evidence (captured during development):
   writer and never misses an event.
 - Mode A (Hook-driven) requires the registry validator to accept the
   `io.minimax.mcode` client-extension namespace. The companion proposal
-  was rewritten for the 0.3.10 nested schema in
+  was rewritten for the 0.3.10 / 0.3.11 nested schema in
   [`MiniMax-Code-Plugins` PR #36](https://github.com/MiniMax-AI/MiniMax-Code-Plugins/pull/36)
   (follow-up to the original
   [PR #20](https://github.com/MiniMax-AI/MiniMax-Code-Plugins/pull/20));
   until the registry accepts the namespace, the `io.minimax.mcode/hooks/`
   directory is dormant and the widget runs in Mode B.
-- On mcode 0.3.10 only 5 / 12 events dispatch
+- On mcode 0.3.10 / 0.3.11 only 5 / 12 events dispatch
   (`SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`,
   `PostToolUse`); the other 7 are forward-only — the `.ps1` files ship
-  and will start firing when a future mcode release grows the `Fwe` set.
-- On Windows 0.3.10 even the 5 dispatched events do not actually fire,
-  because the runtime spawns commands via `/bin/sh -lc` which ENOENTs on
-  a stock Windows install. The hook document is correct and
-  `install-hook.ps1` succeeds, but no script will run until upstream sets
-  `usePlatformShell: true` on Windows. Track the upstream issue; use
-  Mode B in the meantime.
+  and will start firing when a future mcode release grows the `Fwe` set
+  (the `Fwe` allowlist is byte-identical in 0.3.10 and 0.3.11).
+- On Windows 0.3.10 / 0.3.11 even the 5 dispatched events do not
+  actually fire out of the box, because the runtime spawns commands via
+  `/bin/sh -lc` which ENOENTs on a stock Windows install. The hook
+  document is correct and `install-hook.ps1` succeeds, but no script
+  will run until upstream sets `usePlatformShell: true` on Windows. The
+  shipped `hooks/win32-ava-patch/apply.mjs` is a local-only patch that
+  makes the runtime use the existing Windows-aware shell detector
+  (`bZ` / `YO`) and unblocks Mode A on Windows 0.3.10 / 0.3.11 today
+  (verified — see the patch README); it has to be re-applied after every
+  `npm install -g @minimax-ai/code`. Track the upstream issue and use
+  Mode B in the meantime if the patch is not applied.
 
 ## Roadmap
 

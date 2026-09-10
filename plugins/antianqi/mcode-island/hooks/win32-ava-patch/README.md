@@ -1,8 +1,12 @@
-# win32-ava-patch — local fix for the @minimax-ai/code@0.3.10 hook dispatcher
+# win32-ava-patch — local fix for the @minimax-ai/code@0.3.10+ hook dispatcher
 
 A two-script workaround that makes Mode A (Hook-driven) actually fire on
-Windows under `@minimax-ai/code@0.3.10`. The Plugin is correct, the
-runtime is not.
+Windows under `@minimax-ai/code@0.3.10` and `@minimax-ai/code@0.3.11`
+(the latest release; the only 0.3.10 -> 0.3.11 change is a 401-token
+retry fix, so the hook schema, the `Ava` dispatch wrapper, the `Fwe`
+allowlist, and the `Uwe` parser are byte-identical between the two
+releases; this patch is the same on either). The Plugin is correct,
+the runtime is not.
 
 ## What this is
 
@@ -192,7 +196,8 @@ this directory applies cleanly to 0.3.11 and produces the same +
 
 - **Touches `node_modules`.** `npm install -g @minimax-ai/code` will
   overwrite the chunk; re-run `apply.mjs` after every upgrade.
-- **Targets exactly 0.3.10.** Other runtime versions may not have the
+- **Targets 0.3.10 and 0.3.11** (both have the same `Ava` function at
+  the same byte offset). Other runtime versions may not have the
   same line / same offset; `apply.mjs` will detect the missing OLD
   pattern and refuse to silently damage the file.
 - **No credential, no network, no telemetry.** The patch is a local
@@ -204,9 +209,10 @@ this directory applies cleanly to 0.3.11 and produces the same +
 ## What this is NOT
 
 - This is **not** a fix for the wider `Fwe` set coverage problem
-  (only 5 of 12 plugin-declared events are dispatched on 0.3.10). That
-  is a separate runtime change and will need an upstream `Fwe` set
-  expansion.
+  (only 5 of 12 plugin-declared events are dispatched on 0.3.10 and
+  on 0.3.11; both releases share the same `Fwe` allowlist of 8 names).
+  That is a separate runtime change and will need an upstream `Fwe`
+  set expansion.
 - This is **not** a substitute for filing the upstream issue. The
   patch is local-only; other Windows users still hit the bug until
   mcode 0.3.11 ships.

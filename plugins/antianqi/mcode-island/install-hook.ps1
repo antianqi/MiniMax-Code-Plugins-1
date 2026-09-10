@@ -1,8 +1,11 @@
-# mcode-island: install the v0.3.10 hook document into the runtime-resolved
-# dataDir so the Plugin's hooks are visible to the @minimax-ai/code@0.3.10
-# hook-config parser.
+# mcode-island: install the v0.3.10+ hook document into the runtime-resolved
+# dataDir so the Plugin's hooks are visible to the @minimax-ai/code@0.3.10+
+# hook-config parser (verified on @minimax-ai/code@0.3.10 and
+# @minimax-ai/code@0.3.11; the hook schema, the Ava dispatch wrapper, the
+# Fwe allowlist, and the Uwe parser are byte-identical between the two
+# releases).
 #
-# Background. The 0.3.10 runtime reads hooks.json from:
+# Background. The 0.3.10+ runtime reads hooks.json from:
 #   - $MINIMAX_DATA_DIR/hooks/hooks.json  (project-wide)
 #   - $MINIMAX_DATA_DIR/agents/<agentName>/hooks/hooks.json  (per-agent)
 # It does NOT read the Plugin's own io.minimax.mcode/hooks/hooks.json
@@ -40,7 +43,7 @@ if (-not (Test-Path -LiteralPath $SourcePath)) {
 }
 
 # 2. Resolve the destination dataDir.
-#    The 0.3.10 runtime resolves dataDir from, in order:
+#    The 0.3.10+ runtime resolves dataDir from, in order:
 #      - $env:MINIMAX_DATA_DIR
 #      - $env:MAVIS_DATA_DIR
 #      - the runtime default (typically $HOME/.mavis on Windows)
@@ -91,14 +94,16 @@ Write-Host "  source:    $SourcePath"
 Write-Host "  dataDir:   $DataDir"
 Write-Host "  installed: $TargetPath"
 Write-Host ""
-Write-Host "Note: the @minimax-ai/code@0.3.10 runtime reads this file at"
-Write-Host "session start. The Plugin's own io.minimax.mcode/hooks/hooks.json"
-Write-Host "is still kept in sync for when the runtime learns to read it,"
-Write-Host "but the runtime currently consults only the dataDir path above."
+Write-Host "Note: the @minimax-ai/code@0.3.10+ runtime reads this file at"
+Write-Host "session start (verified on @minimax-ai/code@0.3.10 and"
+Write-Host "@minimax-ai/code@0.3.11; the contract is byte-identical). The"
+Write-Host "Plugin's own io.minimax.mcode/hooks/hooks.json is still kept in"
+Write-Host "sync for when the runtime learns to read it, but the runtime"
+Write-Host "currently consults only the dataDir path above."
 Write-Host ""
-Write-Host "Caveat (mcode 0.3.10 on Windows): the runtime's hook dispatcher"
-Write-Host "spawns commands via /bin/sh -lc, which ENOENTs on Windows. The"
-Write-Host "hook config is correct and the install step succeeded, but no"
-Write-Host "hook will fire on Windows 0.3.10 until the runtime sets"
+Write-Host "Caveat (mcode 0.3.10 / 0.3.11 on Windows): the runtime's hook"
+Write-Host "dispatcher spawns commands via /bin/sh -lc, which ENOENTs on"
+Write-Host "Windows. The hook config is correct and the install step"
+Write-Host "succeeded, but no hook will fire on Windows 0.3.10 / 0.3.11 until"
 Write-Host "usePlatformShell: true on Windows. Track the upstream issue"
 Write-Host "and use Mode B (detector) in the meantime."
