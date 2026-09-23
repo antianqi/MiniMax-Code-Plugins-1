@@ -516,10 +516,12 @@ function Update-State {
   "[$ts] $State :: $Message$progTag" | Add-Content -Path $script:logFile -Encoding UTF8
 }
 
-# 切回调用方窗口（点击 pill 时调用）
-function Focus-CallerWindow {
+# 解析调用方窗口（caller.json → targetHwnd / targetPid）。
+# 处理三种死法：hwnd 死了 / 进程死了（fallback 到父进程 terminal）/
+# hwnd 被销毁重建。返回 [PSCustomObject]@{ Hwnd; Pid; Exe } 或 $null。
+function Resolve-CallerWindow {
   $callerFile = Join-Path $env:APPDATA 'mcode-island\caller.json'
-  if (!(Test-Path $callerFile)) { Dbg 'FOCUS: no caller file'; return }
+  if (!(Test-Path $callerFile)) { Dbg 'RESOLVE: no caller file'; return $null }
 
   $hwnd = [IntPtr]::Zero
   $targetPid = 0
@@ -530,69 +532,115 @@ function Focus-CallerWindow {
     $targetPid = [int]$data.targetPid
     $targetExe = if ($data.targetExe) { [string]$data.targetExe } else { '' }
   } catch {
-    Dbg "FOCUS: caller.json parse error"
-    return
+    Dbg "RESOLVE: caller.json parse error"
+    return $null
   }
-  if ($targetPid -le 0) { Dbg 'FOCUS: no target'; return }
+  if ($targetPid -le 0) { Dbg 'RESOLVE: no target'; return $null }
 
-  # 1) 检查 hwnd 是否还活着
+  # 1) hwnd 死了 → 重找
   if ($hwnd -ne [IntPtr]::Zero -and -not [WinAPI]::IsWindow($hwnd)) {
-    Dbg "FOCUS: hwnd $hwnd dead, re-resolving"
+    Dbg "RESOLVE: hwnd $hwnd dead, re-resolving"
     $hwnd = [IntPtr]::Zero
   }
 
-  # 2) 进程死了 → 找它的父进程（terminal）兜底
+  # 2) 进程死了 → fallback 到父进程（terminal）兜底
   $proc = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
   if (-not $proc) {
-    Dbg "FOCUS: target PID $targetPid gone, finding parent (terminal)"
+    Dbg "RESOLVE: target PID $targetPid gone, finding parent (terminal)"
     $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$targetPid" -ErrorAction SilentlyContinue
     if ($parent -and $parent.ParentProcessId -and $parent.ParentProcessId -gt 0) {
       $parentProc = Get-Process -Id ([int]$parent.ParentProcessId) -ErrorAction SilentlyContinue
       if ($parentProc) {
         $targetPid = $parentProc.Id
         $targetExe = $parentProc.ProcessName
-        # 优先用 MainWindowHandle，失败就用第一个可见窗口
         if ($parentProc.MainWindowHandle -ne [IntPtr]::Zero) {
           $hwnd = $parentProc.MainWindowHandle
         } else {
           $hwnd = [WinAPI]::FindVisibleWindowForPid([uint32]$targetPid)
         }
-        Dbg "FOCUS: fall back to parent $($parentProc.ProcessName) PID=$targetPid hwnd=$hwnd"
+        Dbg "RESOLVE: fall back to parent $($parentProc.ProcessName) PID=$targetPid hwnd=$hwnd"
       }
     }
     if ($hwnd -eq [IntPtr]::Zero) {
-      Dbg 'FOCUS: no parent fallback available'
-      return
+      Dbg 'RESOLVE: no parent fallback available'
+      return $null
     }
-  }
-  # 3) 进程还在但 hwnd 死了（被销毁/重建）→ 找进程的第一个可见窗口
-  if ($hwnd -eq [IntPtr]::Zero -or -not [WinAPI]::IsWindow($hwnd)) {
-    Dbg "FOCUS: hwnd invalid, finding new visible window for PID $targetPid ($targetExe)"
-    $hwnd = [WinAPI]::FindVisibleWindowForPid([uint32]$targetPid)
-    if ($hwnd -eq [IntPtr]::Zero) {
-      Dbg 'FOCUS: no visible window found for target process'
-      return
-    }
-    Dbg "FOCUS: re-resolved to hwnd $hwnd"
   }
 
-  try {
-    # 1) 授权目标进程可以切前台（modern Windows 强制）
-    [WinAPI]::AllowSetForegroundWindow([uint32]$targetPid) | Out-Null
-    # 2) 最小化就还原
-    if ([WinAPI]::IsIconic($hwnd)) {
-      [WinAPI]::ShowWindow($hwnd, 9) | Out-Null   # SW_RESTORE
+  # 3) 进程还在但 hwnd 死了（被销毁/重建）→ 找新可见窗口
+  if ($hwnd -eq [IntPtr]::Zero -or -not [WinAPI]::IsWindow($hwnd)) {
+    Dbg "RESOLVE: hwnd invalid, finding new visible window for PID $targetPid ($targetExe)"
+    $hwnd = [WinAPI]::FindVisibleWindowForPid([uint32]$targetPid)
+    if ($hwnd -eq [IntPtr]::Zero) {
+      Dbg 'RESOLVE: no visible window found for target process'
+      return $null
     }
-    # 3) 设顶
-    [WinAPI]::SetWindowPos($hwnd, [WinAPI]::HWND_TOPMOST, 0, 0, 0, 0, [WinAPI]::SWP_NOACTIVATE) | Out-Null
-    [WinAPI]::SetWindowPos($hwnd, [IntPtr]::new(-2), 0, 0, 0, 0, [WinAPI]::SWP_NOACTIVATE) | Out-Null  # HWND_NOTOPMOST
-    # 4) 抢焦点
-    [WinAPI]::BringWindowToTop($hwnd) | Out-Null
-    [WinAPI]::SetForegroundWindow($hwnd) | Out-Null
-    $proc2 = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
-    Dbg ("FOCUS OK: target=" + $proc2.ProcessName + " PID=" + $targetPid + " hwnd=" + $hwnd)
+    Dbg "RESOLVE: re-resolved to hwnd $hwnd"
+  }
+
+  return [PSCustomObject]@{ Hwnd = $hwnd; Pid = $targetPid; Exe = $targetExe }
+}
+
+# 强制把调用方窗口拉到前台（modern Windows 要求 AllowSetForegroundWindow）。
+# 不管当前 visible 与否,都做 show + focus。Focus-CallerWindow 保留,
+# 因为它是 Resolve-CallerWindow + 强制 show 的最小封装,可用于自动聚焦
+# 流程（needs_input 状态自动弹窗那种）。
+function Focus-CallerWindow {
+  $r = Resolve-CallerWindow
+  if (-not $r) { return }
+
+  try {
+    [WinAPI]::AllowSetForegroundWindow([uint32]$r.Pid) | Out-Null
+    if ([WinAPI]::IsIconic($r.Hwnd)) {
+      [WinAPI]::ShowWindow($r.Hwnd, 9) | Out-Null   # SW_RESTORE
+    }
+    [WinAPI]::SetWindowPos($r.Hwnd, [WinAPI]::HWND_TOPMOST, 0, 0, 0, 0, [WinAPI]::SWP_NOACTIVATE) | Out-Null
+    [WinAPI]::SetWindowPos($r.Hwnd, [IntPtr]::new(-2), 0, 0, 0, 0, [WinAPI]::SWP_NOACTIVATE) | Out-Null  # HWND_NOTOPMOST
+    [WinAPI]::BringWindowToTop($r.Hwnd) | Out-Null
+    [WinAPI]::SetForegroundWindow($r.Hwnd) | Out-Null
+    $proc2 = Get-Process -Id $r.Pid -ErrorAction SilentlyContinue
+    Dbg ("FOCUS OK: target=" + $proc2.ProcessName + " PID=" + $r.Pid + " hwnd=" + $r.Hwnd)
   } catch {
     Dbg "FOCUS FAIL: $($_.Exception.Message)"
+  }
+}
+
+# 单击 pill toggle：可见（未最小化）→ 隐藏；隐藏 → 还原 + 抢焦点。
+# 设计取舍：用 SW_HIDE + SW_SHOW 对,而不是 SW_MINIMIZE + SW_RESTORE：
+#   1. SW_MINIMIZE 在某些终端配置下(例如 Windows Terminal 的
+#      "Always show tabs on top")会保留一个 thin tab-bar strip 浮在桌面顶部,
+#      用户体验上不算真"藏",还是有个 visible artifact。
+#   2. SW_HIDE 完全抹除窗口,任务栏条目也消失 (recovery 路径只剩 pill
+#      自己 + 重新启动 widget)。
+#   3. 反向 SW_SHOW 把 SW_HIDE 的窗口恢复 (跟 minimize-then-restore
+#      走不同 code path)。
+# 状态判定: IsWindowVisible 在 SW_HIDE 后返回 false,在 SW_MINIMIZE 后
+# 也返回 false (但 IsIconic 返回 true)。所以 toggle 只看 IsWindowVisible
+# 即可,不区分 minimize 和 hide 状态。
+function Toggle-CallerWindow {
+  $r = Resolve-CallerWindow
+  if (-not $r) { return }
+
+  try {
+    $isShown = [WinAPI]::IsWindowVisible($r.Hwnd)
+    if ($isShown) {
+      [WinAPI]::ShowWindow($r.Hwnd, 0) | Out-Null   # SW_HIDE
+      Dbg "TOGGLE: hid target=$($r.Exe) PID=$($r.Pid) hwnd=$($r.Hwnd)"
+    } else {
+      [WinAPI]::ShowWindow($r.Hwnd, 5) | Out-Null   # SW_SHOW (恢复 SW_HIDE 的窗口)
+      [WinAPI]::AllowSetForegroundWindow([uint32]$r.Pid) | Out-Null
+      # 如果窗口被其他途径最小化了(IsIconic=true),走 restore
+      if ([WinAPI]::IsIconic($r.Hwnd)) {
+        [WinAPI]::ShowWindow($r.Hwnd, 9) | Out-Null   # SW_RESTORE
+      }
+      [WinAPI]::SetWindowPos($r.Hwnd, [WinAPI]::HWND_TOPMOST, 0, 0, 0, 0, [WinAPI]::SWP_NOACTIVATE) | Out-Null
+      [WinAPI]::SetWindowPos($r.Hwnd, [IntPtr]::new(-2), 0, 0, 0, 0, [WinAPI]::SWP_NOACTIVATE) | Out-Null  # HWND_NOTOPMOST
+      [WinAPI]::BringWindowToTop($r.Hwnd) | Out-Null
+      [WinAPI]::SetForegroundWindow($r.Hwnd) | Out-Null
+      Dbg "TOGGLE: shown target=$($r.Exe) PID=$($r.Pid) hwnd=$($r.Hwnd)"
+    }
+  } catch {
+    Dbg "TOGGLE FAIL: $($_.Exception.Message)"
   }
 }
 
@@ -692,7 +740,7 @@ $window.Add_MouseLeftButtonUp({
     if ($script:dragStart -and -not $script:didDrag) {
       Dbg 'CLICK detected'
       Flash-Click
-      Focus-CallerWindow
+      Toggle-CallerWindow
     }
   } catch {
     Dbg "CLICK FAIL: $($_.Exception.Message)"

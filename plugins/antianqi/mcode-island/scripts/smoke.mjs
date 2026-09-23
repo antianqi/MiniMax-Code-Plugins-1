@@ -390,6 +390,51 @@ const main = async () => {
         out('PASS', 'scripts/test-substep-progress.mjs exists (run separately for full suite)');
     }
 
+    // 5c2. Click toggle extension (round-14 refactor).
+    // The pill's MouseLeftButtonUp must call Toggle-CallerWindow, NOT
+    // Focus-CallerWindow. Single-click show is one-way and forces the
+    // CLI to the front every time the user clicks, which is wrong for
+    // "I clicked the pill to hide the CLI" — the second click would
+    // re-show it and surprise the user. Toggle semantics match the
+    // user's "单击收起单击调出" mental model.
+    // Drift lock: Resolve-CallerWindow + Toggle-CallerWindow must
+    // exist as named functions (refactor target), and the click
+    // handler must invoke Toggle-CallerWindow, not Focus-CallerWindow.
+    if (await exists(substepWidgetPath)) {
+        const widget = await readFile(substepWidgetPath, 'utf8');
+        if (!/function Resolve-CallerWindow\b/.test(widget)) {
+            out('FAIL', 'mcode-island.ps1: Resolve-CallerWindow function missing (toggle refactor target)');
+        } else {
+            out('PASS', 'mcode-island.ps1: Resolve-CallerWindow function present');
+        }
+        if (!/function Toggle-CallerWindow\b/.test(widget)) {
+            out('FAIL', 'mcode-island.ps1: Toggle-CallerWindow function missing');
+        } else {
+            out('PASS', 'mcode-island.ps1: Toggle-CallerWindow function present');
+        }
+        // Toggle-CallerWindow must dispatch on IsWindowVisible (the
+        // core visibility check). A regression that always calls
+        // ShowWindow(SW_HIDE) without checking state would silently
+        // break the toggle (every click = hide, never show).
+        if (!/IsWindowVisible\s*\(\s*\$r\.Hwnd\s*\)/.test(widget)) {
+            out('FAIL', 'mcode-island.ps1: Toggle-CallerWindow does not check IsWindowVisible');
+        } else {
+            out('PASS', 'mcode-island.ps1: Toggle-CallerWindow gates on IsWindowVisible');
+        }
+        // The click handler must call Toggle-CallerWindow, not Focus.
+        // We anchor on the MouseLeftButtonUp event to scope the check.
+        const clickMatch = widget.match(/Add_MouseLeftButtonUp\([\s\S]*?\}\s*\)\s*$/m);
+        if (!clickMatch) {
+            out('WARN', 'mcode-island.ps1: Add_MouseLeftButtonUp handler not found (drift lock skipped)');
+        } else if (!/Toggle-CallerWindow\b/.test(clickMatch[0])) {
+            out('FAIL', 'mcode-island.ps1: MouseLeftButtonUp does not invoke Toggle-CallerWindow (still using Focus-only)');
+        } else if (/Focus-CallerWindow\b/.test(clickMatch[0])) {
+            out('FAIL', 'mcode-island.ps1: MouseLeftButtonUp invokes both Toggle and Focus — pick one');
+        } else {
+            out('PASS', 'mcode-island.ps1: MouseLeftButtonUp invokes Toggle-CallerWindow (single click toggles show/hide)');
+        }
+    }
+
     // 5b. Drift lock: permission-request.ps1 must emit `{"decision":"ask"}`,
     // not `allow` or `deny`. The 0.2.4 Runtime default for PermissionRequest
     // is fail-closed; an observer Hook that returns `allow` or `deny`
