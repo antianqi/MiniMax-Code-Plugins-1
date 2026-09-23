@@ -156,6 +156,28 @@ alternative:
 & "%PLUGIN_DIR%\mcode-island\notify-island.ps1" -State error    -Message "npm test failed"
 ```
 
+For sub-step progress (Computer Use iterative loops, multi-step plans),
+pass `-Step` / `-Total` / `-Detail` so the pill shows what the agent is
+doing *right now*:
+
+```powershell
+& "%PLUGIN_DIR%\mcode-island\notify-island.ps1" -State working -Message "Computer Use" `
+                                              -Step 3 -Total 12 -Detail "fill username field"
+# → pill renders: "step 3/12 · fill username field"
+
+& "%PLUGIN_DIR%\mcode-island\notify-island.ps1" -State working -Message "Bash" `
+                                              -Step 5 -Detail "npm install"
+# → pill renders: "step 5 · npm install"
+
+& "%PLUGIN_DIR%\mcode-island\notify-island.ps1" -State done -Message "Bash ok"
+# → pill renders: "Bash ok"  (no step → legacy behavior, backward compat)
+```
+
+All three params are optional and backward compatible. The detail field
+replaces the message in the rendered pill when present (avoids stacking
+"Bash ok · fill username"). See `skills/mcode-island/SKILL.md` for the
+full semantics and the contract with the widget renderer.
+
 ## Quick start
 
 1. **Install** — copy this folder into your `~/.minimax/plugins/mcode-island/`

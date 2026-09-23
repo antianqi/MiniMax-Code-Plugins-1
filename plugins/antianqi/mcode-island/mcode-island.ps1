@@ -370,8 +370,44 @@ function Stop-IndeterminateShimmer {
   $script:progressShimmerTransform.X = -130  # 重置到起点
 }
 
+# Sub-step 渲染（"step N[/M] · detail"）：
+#   Step > 0 + Total > 0   → "step 3/12 · fill username"
+#   Step > 0 + Total <= 0  → "step 3 · fill username"
+#   Step > 0 + Detail 空  → "step 3/12"
+#   Step <= 0               → 原 Message 字段
+# 这样 message 字段保持"工具名"("Bash ok"),detail 字段填具体动作,
+# 渲染时拼成 "step 3/12 · Bash ok · fill username" 或者更精确的
+# "step 3/12 · fill username"(detail 存在时优先覆盖 message)。
+# 注意：detail 非空时**完全替换** message,避免双重信息("Bash ok · ls -la")。
+function Build-DisplayMessage {
+  param(
+    [string]$Message,
+    [int]$Step,
+    [int]$Total,
+    [string]$Detail
+  )
+  $base = if ($Message) { $Message } else { '' }
+  if ($Step -le 0) { return $base }
+
+  $stepStr = if ($Total -gt 0) { "step $Step/$Total" } else { "step $Step" }
+  if ($Detail) {
+    # detail 非空时优先用 detail(agent 已经表达了"我在做什么")
+    return "$stepStr · $Detail"
+  }
+  # detail 空但 step 给出 → 只显示 step,避免重复 message 造成噪声
+  return $stepStr
+}
+
 # 状态更新
 # Progress 取值约定（跟 notify-island.ps1 / detector 对齐）：
+#   -1     → 没有进度信息，进度条隐藏
+#   0..100 → 百分比，0=空条，100=满条；超出范围会被 clamp
+# Usage5h：剩余百分比（0..100）；-2 = 未提供
+# Usage5hResetMs：距下次 5h 刷新的毫秒数；0 = 未知
+# TodoProgress：todowrite 列表的完成百分比（0..100）；-2 = 未提供
+# Step/Total/Detail：sub-step 进度（agent 自报），参 Build-DisplayMessage
+#   - 优先级：显式 Progress > TodoProgress > shimmer
+#   - 即：agent 直接传 progress 最高；否则如果有 todo 列表就用 todo 完成度；都没就 shimmer 动画
 #   -1     → 没有进度信息，进度条隐藏
 #   0..100 → 百分比，0=空条，100=满条；超出范围会被 clamp
 # Usage5h：剩余百分比（0..100）；-2 = 未提供
@@ -386,14 +422,17 @@ function Update-State {
     [int]$Progress = -1,
     [int]$Usage5h = -2,
     [int]$Usage5hResetMs = 0,
-    [int]$TodoProgress = -2
+    [int]$TodoProgress = -2,
+    [int]$Step = -1,
+    [int]$Total = -1,
+    [string]$Detail = ''
   )
   $s = $script:stateMap[$State]
   if (!$s) { $s = $script:stateMap['idle'] }
   $script:statusDot.Fill = C $s.dot
   $script:pulseRing.Fill = C $s.ring
   $script:stateText.Text = $s.label
-  $script:messageText.Text = if ($Message) { $Message } else { '' }
+  $script:messageText.Text = Build-DisplayMessage -Message $Message -Step $Step -Total $Total -Detail $Detail
   $script:actionIcon.Text = $s.icon
 
   if ($State -in @('thinking','working','waiting')) { Start-Pulse } else { Stop-Pulse }
@@ -689,18 +728,25 @@ $timer.Add_Tick({
     $script:lastStatusMtime = $mtime
     $data = Get-Content $statusFile -Raw -Encoding UTF8 | ConvertFrom-Json
     # progress 也要进 sig，否则 agent 连续推 working+相同 message+不同 progress 会被去重
+    # step/total/detail 也要进 sig,否则连续推同 state 但不同 step 会被去重
     $prog = if ($data.PSObject.Properties['progress']) { [int]$data.progress } else { -1 }
     $usage = $null
     $resetMs = 0
     $todoP = -2
+    $step = -1
+    $total = -1
+    $detail = ''
     if ($data.PSObject.Properties['usage5h'] -and $null -ne $data.usage5h) { $usage = [int]$data.usage5h }
     if ($data.PSObject.Properties['usage5hResetMs'] -and $null -ne $data.usage5hResetMs) { $resetMs = [int]$data.usage5hResetMs }
     if ($data.PSObject.Properties['todoProgress'] -and $null -ne $data.todoProgress) { $todoP = [int]$data.todoProgress }
-    $sig = "$($data.state)|$($data.message)|$prog|$usage|$resetMs|$todoP|$($data.ts)"
+    if ($data.PSObject.Properties['step'] -and $null -ne $data.step) { $step = [int]$data.step }
+    if ($data.PSObject.Properties['total'] -and $null -ne $data.total) { $total = [int]$data.total }
+    if ($data.PSObject.Properties['detail'] -and $null -ne $data.detail) { $detail = [string]$data.detail }
+    $sig = "$($data.state)|$($data.message)|$prog|$usage|$resetMs|$todoP|$step|$total|$detail|$($data.ts)"
     if ($sig -eq $script:lastStatusSig) { return }
     $script:lastStatusSig = $sig
-    Dbg "POLL: $($data.state) :: $($data.message) (progress=$prog usage5h=$usage resetMs=$resetMs todoProgress=$todoP)"
-    Update-State -State $data.state -Message $data.message -Progress $prog -Usage5h $usage -Usage5hResetMs $resetMs -TodoProgress $todoP
+    Dbg "POLL: $($data.state) :: $($data.message) step=$step/$total detail=$detail (progress=$prog usage5h=$usage resetMs=$resetMs todoProgress=$todoP)"
+    Update-State -State $data.state -Message $data.message -Progress $prog -Usage5h $usage -Usage5hResetMs $resetMs -TodoProgress $todoP -Step $step -Total $total -Detail $detail
   } catch {
     Dbg "POLL ERR: $($_.Exception.Message)"
   }
@@ -717,12 +763,18 @@ if (Test-Path $statusFile) {
     $initUsage = $null
     $initReset = 0
     $initTodo = -2
+    $initStep = -1
+    $initTotal = -1
+    $initDetail = ''
     if ($init.PSObject.Properties['usage5h'] -and $null -ne $init.usage5h) { $initUsage = [int]$init.usage5h }
     if ($init.PSObject.Properties['usage5hResetMs'] -and $null -ne $init.usage5hResetMs) { $initReset = [int]$init.usage5hResetMs }
     if ($init.PSObject.Properties['todoProgress'] -and $null -ne $init.todoProgress) { $initTodo = [int]$init.todoProgress }
-    $script:lastStatusSig = "$($init.state)|$($init.message)|$initProg|$initUsage|$initReset|$initTodo|$($init.ts)"
+    if ($init.PSObject.Properties['step'] -and $null -ne $init.step) { $initStep = [int]$init.step }
+    if ($init.PSObject.Properties['total'] -and $null -ne $init.total) { $initTotal = [int]$init.total }
+    if ($init.PSObject.Properties['detail'] -and $null -ne $init.detail) { $initDetail = [string]$init.detail }
+    $script:lastStatusSig = "$($init.state)|$($init.message)|$initProg|$initUsage|$initReset|$initTodo|$initStep|$initTotal|$initDetail|$($init.ts)"
     $script:lastStatusMtime = (Get-Item $statusFile).LastWriteTimeUtc.Ticks
-    Update-State -State $init.state -Message $init.message -Progress $initProg -Usage5h $initUsage -Usage5hResetMs $initReset -TodoProgress $initTodo
+    Update-State -State $init.state -Message $init.message -Progress $initProg -Usage5h $initUsage -Usage5hResetMs $initReset -TodoProgress $initTodo -Step $initStep -Total $initTotal -Detail $initDetail
   } catch {}
 } else {
   Update-State -State 'idle' -Message ''
