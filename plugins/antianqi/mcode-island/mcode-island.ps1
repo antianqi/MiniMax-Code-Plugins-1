@@ -1,4 +1,4 @@
-﻿# mcode 灵动岛 v1 - WPF + PowerShell
+# mcode 灵动岛 v1 - WPF + PowerShell
 # 用法：右键 → 用 PowerShell 运行；或通过 start-island.ps1 启动
 
 $ErrorActionPreference = 'Stop'
@@ -605,18 +605,20 @@ function Focus-CallerWindow {
   }
 }
 
-# 单击 pill toggle：可见（未最小化）→ 隐藏；隐藏 → 还原 + 抢焦点。
-# 设计取舍：用 SW_HIDE + SW_SHOW 对,而不是 SW_MINIMIZE + SW_RESTORE：
-#   1. SW_MINIMIZE 在某些终端配置下(例如 Windows Terminal 的
-#      "Always show tabs on top")会保留一个 thin tab-bar strip 浮在桌面顶部,
-#      用户体验上不算真"藏",还是有个 visible artifact。
-#   2. SW_HIDE 完全抹除窗口,任务栏条目也消失 (recovery 路径只剩 pill
-#      自己 + 重新启动 widget)。
-#   3. 反向 SW_SHOW 把 SW_HIDE 的窗口恢复 (跟 minimize-then-restore
-#      走不同 code path)。
-# 状态判定: IsWindowVisible 在 SW_HIDE 后返回 false,在 SW_MINIMIZE 后
-# 也返回 false (但 IsIconic 返回 true)。所以 toggle 只看 IsWindowVisible
-# 即可,不区分 minimize 和 hide 状态。
+# 单击 pill toggle：可见 → 隐藏；隐藏 → 全屏还原 + 抢焦点。
+# 设计取舍 (round-14+15):
+#   hide 分支用 SW_HIDE (而不是 SW_MINIMIZE)：
+#     SW_MINIMIZE 在某些终端配置下(Windows Terminal "Always show tabs on top")
+#     会保留一个 thin tab-bar strip 浮在桌面顶部,不算真"藏"。
+#   show 分支用 SW_MAXIMIZE (而不是 SW_SHOW + IsIconic + SW_RESTORE)：
+#     SW_HIDE 保留窗口的"非 maximize 状态";如果窗口被外部 resize 成 480x84
+#     (mouse_event 误操作 / Win11 Snap 误触 / 用户手动缩小),SW_SHOW 后
+#     还是 480x84,用户看到一个 tab-bar 一小条而不是完整窗口。
+#     SW_MAXIMIZE 强制 maximize:对 hidden/minimized/normal 都能激活并
+#     强制全屏;对已经是 maximized 的窗口是 no-op,不破坏正常用户流程。
+# 状态判定: IsWindowVisible 在 SW_HIDE 和 SW_MINIMIZE 后都返回 false
+# (区别是 IsIconic:SW_HIDE 后 false,SW_MINIMIZE 后 true)。toggle 只看
+# IsWindowVisible 即可,SW_MAXIMIZE 在内部正确处理两种 case。
 function Toggle-CallerWindow {
   $r = Resolve-CallerWindow
   if (-not $r) { return }
@@ -627,17 +629,13 @@ function Toggle-CallerWindow {
       [WinAPI]::ShowWindow($r.Hwnd, 0) | Out-Null   # SW_HIDE
       Dbg "TOGGLE: hid target=$($r.Exe) PID=$($r.Pid) hwnd=$($r.Hwnd)"
     } else {
-      [WinAPI]::ShowWindow($r.Hwnd, 5) | Out-Null   # SW_SHOW (恢复 SW_HIDE 的窗口)
+      [WinAPI]::ShowWindow($r.Hwnd, 3) | Out-Null   # SW_MAXIMIZE (强制全屏,修复 480x84 strip bug)
       [WinAPI]::AllowSetForegroundWindow([uint32]$r.Pid) | Out-Null
-      # 如果窗口被其他途径最小化了(IsIconic=true),走 restore
-      if ([WinAPI]::IsIconic($r.Hwnd)) {
-        [WinAPI]::ShowWindow($r.Hwnd, 9) | Out-Null   # SW_RESTORE
-      }
       [WinAPI]::SetWindowPos($r.Hwnd, [WinAPI]::HWND_TOPMOST, 0, 0, 0, 0, [WinAPI]::SWP_NOACTIVATE) | Out-Null
       [WinAPI]::SetWindowPos($r.Hwnd, [IntPtr]::new(-2), 0, 0, 0, 0, [WinAPI]::SWP_NOACTIVATE) | Out-Null  # HWND_NOTOPMOST
       [WinAPI]::BringWindowToTop($r.Hwnd) | Out-Null
       [WinAPI]::SetForegroundWindow($r.Hwnd) | Out-Null
-      Dbg "TOGGLE: shown target=$($r.Exe) PID=$($r.Pid) hwnd=$($r.Hwnd)"
+      Dbg "TOGGLE: shown (maximized) target=$($r.Exe) PID=$($r.Pid) hwnd=$($r.Hwnd)"
     }
   } catch {
     Dbg "TOGGLE FAIL: $($_.Exception.Message)"

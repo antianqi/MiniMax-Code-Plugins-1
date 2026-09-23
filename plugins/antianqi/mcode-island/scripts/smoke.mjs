@@ -433,6 +433,35 @@ const main = async () => {
         } else {
             out('PASS', 'mcode-island.ps1: MouseLeftButtonUp invokes Toggle-CallerWindow (single click toggles show/hide)');
         }
+
+        // Round-15: Toggle's restore branch must call SW_MAXIMIZE (3), not
+        // SW_SHOW (5) / SW_RESTORE (9). SW_HIDE preserves the window's
+        // "non-maximized size"; if the WT window got accidentally resized
+        // to a thin strip (e.g., 480x84 from a snap gesture or our own
+        // mouse_event test artifacts), SW_SHOW / SW_RESTORE would re-show
+        // it as that strip — the user's complaint was "hide works, show is
+        // a thin strip". SW_MAXIMIZE forces full-screen on hidden /
+        // minimized / normal windows alike; no-op on already-maximized.
+        const toggleMatch = widget.match(/function Toggle-CallerWindow[\s\S]*?\n\}\n/);
+        if (!toggleMatch) {
+            out('WARN', 'mcode-island.ps1: Toggle-CallerWindow body not found (drift lock skipped)');
+        } else {
+            const toggleBody = toggleMatch[0];
+            // Extract the `else` branch (the restore path) so the check
+            // is anchored on the show branch, not the hide branch (which
+            // intentionally uses SW_HIDE=0).
+            const elseMatch = toggleBody.match(/else\s*\{([\s\S]*?)\n\s*\}\s*\n\s*\}\s*$/m);
+            const restoreBody = elseMatch ? elseMatch[1] : '';
+            if (!restoreBody) {
+                out('FAIL', 'mcode-island.ps1: Toggle-CallerWindow else branch not parseable');
+            } else if (!/ShowWindow\(\s*\$r\.Hwnd\s*,\s*3\s*\)/.test(restoreBody)) {
+                out('FAIL', 'mcode-island.ps1: Toggle restore branch does not call SW_MAXIMIZE (ShowWindow(_, 3)). A regression to SW_SHOW (5) or SW_RESTORE (9) re-shows the window at its pre-hide size (e.g., 480x84 strip if WT got accidentally resized).');
+            } else if (/ShowWindow\(\s*\$r\.Hwnd\s*,\s*5\s*\)/.test(restoreBody)) {
+                out('FAIL', 'mcode-island.ps1: Toggle restore branch calls SW_SHOW (5) in addition to SW_MAXIMIZE — keep only SW_MAXIMIZE; SW_SHOW re-shows at pre-hide size and defeats the maximize intent.');
+            } else {
+                out('PASS', 'mcode-island.ps1: Toggle restore branch forces SW_MAXIMIZE (full-screen on show, fixes 480x84 strip bug)');
+            }
+        }
     }
 
     // 5b. Drift lock: permission-request.ps1 must emit `{"decision":"ask"}`,
