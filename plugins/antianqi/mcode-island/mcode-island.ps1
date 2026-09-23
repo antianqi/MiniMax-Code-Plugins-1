@@ -73,9 +73,35 @@ public class WinAPI {
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc lpEnumFunc, IntPtr lParam);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr hWnd, uint dwFlags);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool GetMonitorInfoW(IntPtr hMonitor, ref MONITORINFO lpmi);
+  [StructLayout(LayoutKind.Sequential)]
+  public struct RECT { public int Left, Top, Right, Bottom; }
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  public struct MONITORINFO {
+    public int cbSize;
+    public RECT rcMonitor;
+    public RECT rcWork;
+    public uint dwFlags;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string szDevice;
+  }
   public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
   public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+  public static readonly IntPtr HWND_TOP = new IntPtr(0);
   public const uint SWP_NOACTIVATE = 0x0010;
+  public const uint SWP_NOZORDER = 0x0004;
+  public const uint MONITOR_DEFAULTTONEAREST = 0x00000002;
+
+  // 取窗口所在 monitor 的 work area。如果失败返回 (-1,-1)-(-1,-1) 表示无效。
+  public static RECT GetWorkAreaForWindow(IntPtr hWnd) {
+    var bad = new RECT { Left = -1, Top = -1, Right = -1, Bottom = -1 };
+    IntPtr hMon = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+    if (hMon == IntPtr.Zero) return bad;
+    var mi = new MONITORINFO();
+    mi.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(mi);
+    if (!GetMonitorInfoW(hMon, ref mi)) return bad;
+    return mi.rcWork;
+  }
 
   // 找 pid 的第一个可见窗口
   public static IntPtr FindVisibleWindowForPid(uint targetPid) {
@@ -606,16 +632,17 @@ function Focus-CallerWindow {
 }
 
 # 单击 pill toggle：可见 → 隐藏；隐藏 → 全屏还原 + 抢焦点。
-# 设计取舍 (round-14+15):
+# 设计取舍 (round-14+15+16):
 #   hide 分支用 SW_HIDE (而不是 SW_MINIMIZE)：
 #     SW_MINIMIZE 在某些终端配置下(Windows Terminal "Always show tabs on top")
 #     会保留一个 thin tab-bar strip 浮在桌面顶部,不算真"藏"。
-#   show 分支用 SW_MAXIMIZE (而不是 SW_SHOW + IsIconic + SW_RESTORE)：
-#     SW_HIDE 保留窗口的"非 maximize 状态";如果窗口被外部 resize 成 480x84
-#     (mouse_event 误操作 / Win11 Snap 误触 / 用户手动缩小),SW_SHOW 后
-#     还是 480x84,用户看到一个 tab-bar 一小条而不是完整窗口。
-#     SW_MAXIMIZE 强制 maximize:对 hidden/minimized/normal 都能激活并
-#     强制全屏;对已经是 maximized 的窗口是 no-op,不破坏正常用户流程。
+#   show 分支先 SW_MAXIMIZE (激活+最大化),再用 SetWindowPos 强制拉到
+#   MonitorFromWindow+GetMonitorInfo 拿到的真实 work area(2560x1392 而
+#   不是 [Screen]::PrimaryScreen 报告的 1920x1080 — WinForms DPI 虚拟化
+#   会把 2560x1440 物理像素报成 1920x1080 逻辑像素,SW_MAXIMIZE 跟着
+#   1920x1080 走,结果 WT 只填了物理显示器的左上 75%)。
+#   最后 SetWindowPos(HWND_TOP) + BringWindowToTop 抢 z-order,绕过
+#   widget PID 没有 foreground 权限的限制。
 # 状态判定: IsWindowVisible 在 SW_HIDE 和 SW_MINIMIZE 后都返回 false
 # (区别是 IsIconic:SW_HIDE 后 false,SW_MINIMIZE 后 true)。toggle 只看
 # IsWindowVisible 即可,SW_MAXIMIZE 在内部正确处理两种 case。
@@ -629,13 +656,22 @@ function Toggle-CallerWindow {
       [WinAPI]::ShowWindow($r.Hwnd, 0) | Out-Null   # SW_HIDE
       Dbg "TOGGLE: hid target=$($r.Exe) PID=$($r.Pid) hwnd=$($r.Hwnd)"
     } else {
-      [WinAPI]::ShowWindow($r.Hwnd, 3) | Out-Null   # SW_MAXIMIZE (强制全屏,修复 480x84 strip bug)
+      # 1) SW_MAXIMIZE 激活+标记 maximized
+      [WinAPI]::ShowWindow($r.Hwnd, 3) | Out-Null   # SW_MAXIMIZE
+      # 2) SetWindowPos 强制拉到 monitor work area (绕过 DPI/remembered-size 限制)
+      $wa = [WinAPI]::GetWorkAreaForWindow($r.Hwnd)
+      if ($wa.Left -ne -1) {
+        $cx = $wa.Right - $wa.Left
+        $cy = $wa.Bottom - $wa.Top
+        [WinAPI]::SetWindowPos($r.Hwnd, [IntPtr]::Zero, $wa.Left, $wa.Top, $cx, $cy, [WinAPI]::SWP_NOZORDER) | Out-Null
+        Dbg "TOGGLE: forced to work area ({0},{1}) {2}x{3}" -f $wa.Left, $wa.Top, $cx, $cy
+      }
+      # 3) 抢 z-order 到最前(SetWindowPos(HWND_TOP) 不需要 foreground 权限)
       [WinAPI]::AllowSetForegroundWindow([uint32]$r.Pid) | Out-Null
-      [WinAPI]::SetWindowPos($r.Hwnd, [WinAPI]::HWND_TOPMOST, 0, 0, 0, 0, [WinAPI]::SWP_NOACTIVATE) | Out-Null
-      [WinAPI]::SetWindowPos($r.Hwnd, [IntPtr]::new(-2), 0, 0, 0, 0, [WinAPI]::SWP_NOACTIVATE) | Out-Null  # HWND_NOTOPMOST
+      [WinAPI]::SetWindowPos($r.Hwnd, [WinAPI]::HWND_TOP, 0, 0, 0, 0, [WinAPI]::SWP_NOACTIVATE -bor [WinAPI]::SWP_NOZORDER) | Out-Null
       [WinAPI]::BringWindowToTop($r.Hwnd) | Out-Null
       [WinAPI]::SetForegroundWindow($r.Hwnd) | Out-Null
-      Dbg "TOGGLE: shown (maximized) target=$($r.Exe) PID=$($r.Pid) hwnd=$($r.Hwnd)"
+      Dbg "TOGGLE: shown (maximized + work-area) target=$($r.Exe) PID=$($r.Pid) hwnd=$($r.Hwnd)"
     }
   } catch {
     Dbg "TOGGLE FAIL: $($_.Exception.Message)"

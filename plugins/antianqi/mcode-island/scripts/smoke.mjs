@@ -461,6 +461,24 @@ const main = async () => {
             } else {
                 out('PASS', 'mcode-island.ps1: Toggle restore branch forces SW_MAXIMIZE (full-screen on show, fixes 480x84 strip bug)');
             }
+
+            // Round-16: Toggle's restore branch must also force the window
+            // to fill the actual monitor work area (MonitorFromWindow +
+            // GetMonitorInfo + SetWindowPos). SW_MAXIMIZE alone is
+            // insufficient on multi-monitor + DPI-virtualized setups: the
+            // user's primary monitor is physically 2560x1440, but WinForms
+            // [Screen]::PrimaryScreen reports 1920x1080 (DPI virtualization).
+            // SW_MAXIMIZE follows the 1920x1080 number and leaves WT at
+            // ~75% of the physical screen — visually "in the top-left corner"
+            // of the user's 2K monitor. The drift lock forces the explicit
+            // SetWindowPos path.
+            if (!/GetWorkAreaForWindow|GetMonitorInfo|MonitorFromWindow/.test(toggleBody)) {
+                out('FAIL', 'mcode-island.ps1: Toggle restore branch does not query monitor work area. Without MonitorFromWindow + SetWindowPos(explicit size), SW_MAXIMIZE alone fills only the WinForms 1920x1080 logical work area, not the actual 2560x1440 physical monitor — leaves WT at the top-left 75%.');
+            } else if (!/SetWindowPos\([^)]*\$wa\.|SetWindowPos\(\$r\.Hwnd,[^,]+,\s*\$wa\.Left,\s*\$wa\.Top,\s*\$cx,\s*\$cy/.test(toggleBody)) {
+                out('FAIL', 'mcode-island.ps1: Toggle restore branch has monitor query but does not SetWindowPos with work-area coords. The contract is: read monitor work area, then SetWindowPos with explicit (Left, Top, cx, cy) — never rely on SW_MAXIMIZE alone for size.');
+            } else {
+                out('PASS', 'mcode-island.ps1: Toggle restore branch forces work-area size via MonitorFromWindow + SetWindowPos (fills 2560x1440 physical monitor, not just 1920x1080 logical)');
+            }
         }
     }
 
