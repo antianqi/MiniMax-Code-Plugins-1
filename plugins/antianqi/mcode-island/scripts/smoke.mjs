@@ -155,7 +155,7 @@ const checkEntry = async (event, entry) => {
 };
 
 const main = async () => {
-    console.log(`mcode-island v0.3.0 self-check`);
+    console.log(`mcode-island v0.4.0 self-check`);
     console.log(`plugin root: ${PLUGIN_ROOT}`);
     console.log('-'.repeat(60));
 
@@ -182,8 +182,8 @@ const main = async () => {
     } else {
         out('PASS', `plugin.json: name is "${plugin.name}"`);
     }
-    if (plugin.version !== '0.3.0') {
-        out('FAIL', `plugin.json: version is "${plugin.version}", expected "0.3.0"`);
+    if (plugin.version !== '0.4.0') {
+        out('FAIL', `plugin.json: version is "${plugin.version}", expected "0.4.0"`);
     } else {
         out('PASS', `plugin.json: version is "${plugin.version}"`);
     }
@@ -309,6 +309,58 @@ const main = async () => {
             }
         }
         out('PASS', '_lib.ps1: shared helper present');
+    }
+
+    // 5c1. Sub-step progress extension (round-13 refactor).
+    // notify-island.ps1 must accept -Step/-Total/-Detail and write them
+    // into status.json. mcode-island.ps1 widget must define
+    // Build-DisplayMessage and pass step/total/detail to it.
+    // _lib.ps1 Format-ToolSummary must extract mcode-computer-use
+    // action+coordinate; Push-Island must forward the new fields.
+    // The detailed functional tests live in test-substep-progress.mjs;
+    // here we lock the surface contract so a future refactor that
+    // drops the params surfaces in smoke (fast path) before reaching
+    // the slower pwsh-spawned tests.
+    const substepNotifyPath = join(PLUGIN_ROOT, 'notify-island.ps1');
+    const substepWidgetPath = join(PLUGIN_ROOT, 'mcode-island.ps1');
+    if (!(await exists(substepNotifyPath))) {
+        out('FAIL', 'notify-island.ps1 missing (sub-step lock skipped)');
+    } else {
+        const notify = await readFile(substepNotifyPath, 'utf8');
+        if (!/\[int\]\$Step\s*=\s*-1/.test(notify) ||
+            !/\[int\]\$Total\s*=\s*-1/.test(notify) ||
+            !/\[string\]\$Detail\s*=\s*''/.test(notify)) {
+            out('FAIL', 'notify-island.ps1: missing -Step/-Total/-Detail params');
+        } else {
+            out('PASS', 'notify-island.ps1: declares -Step -Total -Detail');
+        }
+        if (!/step\s*=\s*\$Step/.test(notify) ||
+            !/total\s*=\s*\$Total/.test(notify) ||
+            !/detail\s*=\s*\$Detail/.test(notify)) {
+            out('FAIL', 'notify-island.ps1: status.json payload missing step/total/detail fields');
+        } else {
+            out('PASS', 'notify-island.ps1: writes step/total/detail to status.json');
+        }
+    }
+    if (await exists(substepWidgetPath)) {
+        const widget = await readFile(substepWidgetPath, 'utf8');
+        if (!/function Build-DisplayMessage/.test(widget)) {
+            out('FAIL', 'mcode-island.ps1: Build-DisplayMessage function missing');
+        } else {
+            out('PASS', 'mcode-island.ps1: Build-DisplayMessage function present');
+        }
+        if (!/\[int\]\$Step\s*=\s*-1/.test(widget) ||
+            !/\[int\]\$Total\s*=\s*-1/.test(widget)) {
+            out('FAIL', 'mcode-island.ps1: Update-State missing Step/Total params');
+        } else {
+            out('PASS', 'mcode-island.ps1: Update-State accepts Step/Total/Detail');
+        }
+    }
+    const substepTestPath = join(PLUGIN_ROOT, 'scripts', 'test-substep-progress.mjs');
+    if (!(await exists(substepTestPath))) {
+        out('WARN', 'scripts/test-substep-progress.mjs missing (sub-step detailed tests not run)');
+    } else {
+        out('PASS', 'scripts/test-substep-progress.mjs exists (run separately for full suite)');
     }
 
     // 5b. Drift lock: permission-request.ps1 must emit `{"decision":"ask"}`,

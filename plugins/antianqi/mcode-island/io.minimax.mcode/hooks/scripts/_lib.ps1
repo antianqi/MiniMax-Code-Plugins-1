@@ -43,7 +43,10 @@ function Push-Island {
         [ValidateSet('idle','thinking','working','waiting','done','error')]
         [string]$State,
 
-        [string]$Message = ''
+        [string]$Message = '',
+        [int]$Step = -1,
+        [int]$Total = -1,
+        [string]$Detail = ''
     )
     if (-not (Test-Path -LiteralPath $script:NotifyIsland)) {
         # Widget is not installed yet — silent no-op. The plugin's
@@ -52,7 +55,7 @@ function Push-Island {
         return
     }
     try {
-        & $script:NotifyIsland -State $State -Message $Message 2>$null | Out-Null
+        & $script:NotifyIsland -State $State -Message $Message -Step $Step -Total $Total -Detail $Detail 2>$null | Out-Null
     } catch {
         # Hook must never block the agent on a notification failure.
     }
@@ -97,6 +100,26 @@ function Format-ToolSummary {
             'WebSearch'     { $detail = [string]$Event.tool_input.query }
             'Task'          { $detail = [string]$Event.tool_input.description }
             'NotebookEdit'  { $detail = [string]$Event.tool_input.notebook_path }
+            # mcode-internal: Computer Use 抽 action + coordinate/text
+            # 例: "mcode-computer-use : click at (1024,768)"
+            #     "mcode-computer-use : type 'hello'"
+            # 注意：coordinate 是 array,PowerShell 默认 $OFS=' ' 会让
+            # "$coord" 渲染成 "(1024 768)" 不是 "(1024,768)"。必须
+            # 显式 -join ','。' ' 在 pill 上看起来像数字被截断,
+            # 影响用户判断坐标。
+            'mcode-computer-use' {
+                $act = if ($Event.tool_input.action) { [string]$Event.tool_input.action } else { '' }
+                if ($Event.tool_input.coordinate) {
+                    $coord = $Event.tool_input.coordinate
+                    $coordStr = "($($coord -join ','))"
+                    $detail = "$act at $coordStr"
+                } elseif ($Event.tool_input.text) {
+                    $txt = [string]$Event.tool_input.text
+                    $detail = "$act '$txt'"
+                } else {
+                    $detail = $act
+                }
+            }
             default         { $detail = '' }
         }
     }
