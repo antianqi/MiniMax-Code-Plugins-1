@@ -90,6 +90,8 @@ public class WinAPI {
   public static readonly IntPtr HWND_TOP = new IntPtr(0);
   public const uint SWP_NOACTIVATE = 0x0010;
   public const uint SWP_NOZORDER = 0x0004;
+  public const uint SWP_NOSIZE = 0x0001;
+  public const uint SWP_NOMOVE = 0x0002;
   public const uint MONITOR_DEFAULTTONEAREST = 0x00000002;
 
   // 取窗口所在 monitor 的 work area。如果失败返回 (-1,-1)-(-1,-1) 表示无效。
@@ -667,8 +669,11 @@ function Toggle-CallerWindow {
         Dbg "TOGGLE: forced to work area ({0},{1}) {2}x{3}" -f $wa.Left, $wa.Top, $cx, $cy
       }
       # 3) 抢 z-order 到最前(SetWindowPos(HWND_TOP) 不需要 foreground 权限)
+      #    注意:cx=0/cy=0 + 缺 SWP_NOSIZE 会被 Windows 当成"resize 到 0x0",
+      #    触发 WT 的 min-size 兜底,变成 480x76 strip。必须加 SWP_NOSIZE。
       [WinAPI]::AllowSetForegroundWindow([uint32]$r.Pid) | Out-Null
-      [WinAPI]::SetWindowPos($r.Hwnd, [WinAPI]::HWND_TOP, 0, 0, 0, 0, [WinAPI]::SWP_NOACTIVATE -bor [WinAPI]::SWP_NOZORDER) | Out-Null
+      $nofollow = [WinAPI]::SWP_NOACTIVATE -bor [WinAPI]::SWP_NOZORDER -bor [WinAPI]::SWP_NOSIZE
+      [WinAPI]::SetWindowPos($r.Hwnd, [WinAPI]::HWND_TOP, 0, 0, 0, 0, $nofollow) | Out-Null
       [WinAPI]::BringWindowToTop($r.Hwnd) | Out-Null
       [WinAPI]::SetForegroundWindow($r.Hwnd) | Out-Null
       Dbg "TOGGLE: shown (maximized + work-area) target=$($r.Exe) PID=$($r.Pid) hwnd=$($r.Hwnd)"

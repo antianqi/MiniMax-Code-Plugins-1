@@ -479,6 +479,21 @@ const main = async () => {
             } else {
                 out('PASS', 'mcode-island.ps1: Toggle restore branch forces work-area size via MonitorFromWindow + SetWindowPos (fills 2560x1440 physical monitor, not just 1920x1080 logical)');
             }
+
+            // Round-17: the follow-up z-order SetWindowPos call (HWND_TOP
+            // to push WT forward without foreground permission) MUST carry
+            // SWP_NOSIZE. Without it, cx=0/cy=0 is interpreted as "resize
+            // to 0x0", triggering WT's min-size fallback to a 480x76 strip —
+            // exactly the regression the user saw. Verified empirically:
+            // a click via computer-use on the live widget left WT at 480x76
+            // despite the work-area SetWindowPos having run a few ms earlier.
+            if (!/SWP_NOSIZE\s*=\s*0x0001/.test(widget)) {
+                out('FAIL', 'mcode-island.ps1: WinAPI class missing SWP_NOSIZE constant (0x0001).');
+            } else if (!/SWP_NOZORDER\s*-bor\s*\[WinAPI\]::SWP_NOSIZE/.test(toggleBody)) {
+                out('FAIL', 'mcode-island.ps1: Toggle z-order SetWindowPos(HWND_TOP) does not include SWP_NOSIZE. cx=0/cy=0 will resize WT to 0x0 and trigger its 480x76 min-size fallback.');
+            } else {
+                out('PASS', 'mcode-island.ps1: Toggle z-order SetWindowPos carries SWP_NOSIZE (won\'t trigger WT min-size 480x76 fallback)');
+            }
         }
     }
 
