@@ -861,7 +861,10 @@ function Toggle-Window {
         $cx = $wa.Right - $wa.Left
         $cy = $wa.Bottom - $wa.Top
         [WinAPI]::SetWindowPos($Target.Hwnd, [IntPtr]::Zero, $wa.Left, $wa.Top, $cx, $cy, [WinAPI]::SWP_NOZORDER) | Out-Null
-        Dbg "TOGGLE: forced to work area ({0},{1}) {2}x{3}" -f $wa.Left, $wa.Top, $cx, $cy
+        # The -f has to sit inside the parentheses: written as
+        # `Dbg "..." -f a, b` the format operator binds to the command, not to
+        # the string, and the log line keeps the raw {0} {1} placeholders.
+        Dbg ("TOGGLE: forced to work area ({0},{1}) {2}x{3}" -f $wa.Left, $wa.Top, $cx, $cy)
       }
       # 3) 抢 z-order 到最前(SetWindowPos(HWND_TOP) 不需要 foreground 权限)
       #    SWP_NOSIZE：cx=0/cy=0 缺它会被 Windows 当成"resize 到 0x0"，
