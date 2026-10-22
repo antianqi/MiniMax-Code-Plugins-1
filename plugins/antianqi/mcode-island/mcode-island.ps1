@@ -1,4 +1,4 @@
-# mcode 灵动岛 v1 - WPF + PowerShell
+﻿# mcode 灵动岛 v1 - WPF + PowerShell
 # 用法：右键 → 用 PowerShell 运行；或通过 start-island.ps1 启动
 
 $ErrorActionPreference = 'Stop'
