@@ -4,7 +4,7 @@ description: Use this skill to publish the agent's live progress onto a Windows 
 license: Apache-2.0
 metadata:
   author: antianqi
-  version: 0.7.0
+  version: 0.8.0
 ---
 
 # mcode 灵动岛状态条
@@ -103,7 +103,7 @@ mcode-island                  REM 启动 widget(幂等)
 mcode-island stop             REM 停止 widget
 mcode-island status           REM 打印 PID 与近期日志
 mcode-island show             REM 把隐藏的 widget 重新唤起
-mcode-island pin              REM 把焦点目标锁定到当前前台窗口
+mcode-island pin              REM 把点击目标锁定到当前前台窗口
 mcode-island unpin            REM 解除锁定
 mcode-island autostart-on     REM 注册开机自启
 mcode-island autostart-off    REM 取消开机自启
@@ -119,6 +119,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<plugin-root>\autostart.ps1
 
 `Alt+F4` 只是隐藏 widget,不是关闭;用 `mcode-island show` 唤回。
 
+**点 pill 会去哪(桌面端适配)**:每次点击都按优先级重新解析目标 ——
+
+1. **手动 pin**(`pin.json`,由 `mcode-island pin` 写入)—— 聚焦那个窗口;
+2. **桌面端应用主窗口**(同 session 内名为 `MiniMax Inside Code` / `MiniMax Code` / `Mavis`
+   的进程)—— 聚焦它,不会隐藏它;
+3. **来源终端窗口**(`caller.json`)—— 保留老行为:一次点击隐藏,再点一次最大化唤回。
+
+桌面端里 agent 由应用托管,跑在应用开的终端里,藏掉那个终端并不会让 agent 停下来,
+用户只会盯着一条不再变化的 pill;所以桌面端优先聚焦应用主窗口。桌面端和 CLI 同时
+开着的时候,用 `mcode-island pin` 把点击目标钉回自己的终端,`mcode-island unpin` 解除。
+
 ## 7. 运行时数据
 
 所有状态数据都在 `%APPDATA%\mcode-island\` 下:
@@ -126,7 +137,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<plugin-root>\autostart.ps1
 | 文件 | 用途 |
 | --- | --- |
 | `status.json` | 当前状态(widget 每 400 ms 轮询一次) |
-| `caller.json` | 来源终端窗口的 HWND / PID(点击 pill 回切用) |
+| `caller.json` | 来源终端窗口的 HWND / PID(没有桌面端应用时的点击兜底目标) |
+| `pin.json` | 手动 pin 的点击目标(`mcode-island pin` 写入,`unpin` 清除) |
 | `config.json` | pill 位置、尺寸、透明度 |
 | `widget.pid` | widget 进程 PID |
 | `island.log` | 状态流转历史 |

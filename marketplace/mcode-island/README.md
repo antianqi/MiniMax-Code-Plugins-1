@@ -48,7 +48,7 @@ mcode-island/
 ├── stop-island.ps1               # stop the widget
 ├── status-island.ps1             # print widget state
 ├── show-island.ps1               # re-raise the hidden widget
-├── pin-island.ps1                # lock the focus target to the foreground window
+├── pin-island.ps1                # pin the click target to the foreground window
 ├── autostart.ps1                 # register/unregister the Windows logon entry
 ├── notify-island.ps1             # state-push helper (the agent calls this)
 ├── wrap-tool.ps1                 # all-in-one state publisher for tool calls
@@ -86,6 +86,27 @@ The state detector is optional. When it is running it reads the local MiniMax Co
 stream (`~/.minimax/v2/sessions`, or `$env:MINIMAX_DATA_DIR`) and infers the current state on its
 own, which keeps the pill moving even when the agent does not push. It reads local files only.
 
+## Clicking the pill
+
+The click target is resolved on every click, in this order:
+
+| # | target                | how it is found                                             | what the click does                     |
+| - | --------------------- | ----------------------------------------------------------- | --------------------------------------- |
+| 1 | a manual pin          | `pin.json`, written by `mcode-island pin`                    | focuses that window                     |
+| 2 | the desktop app       | a process named `MiniMax Inside Code` / `MiniMax Code` / `Mavis` in the widget's own session | focuses the app window |
+| 3 | the originating terminal | `caller.json`, written by `notify-island.ps1`             | shows it, or hides it when it is already visible |
+
+In the desktop app the agent is hosted by the app and runs in a terminal the app
+opened. Hiding that terminal does not stop the agent — the user would be left
+looking at a static pill while the work continues behind it — so the desktop
+app window is focused and never hidden.
+
+`mcode-island pin` overrides the target and stores it in `pin.json`, a
+separate file from `caller.json`: `caller.json` is rewritten on every state
+transition, so a pin stored there would not survive the next push. It is the
+way to point the click at your own terminal while the desktop app is open.
+`mcode-island unpin` clears it.
+
 ## Autostart
 
 `mcode-island autostart-on` writes two named values under
@@ -95,8 +116,8 @@ afterwards that every unrelated entry in that key is still there.
 
 ## Runtime data
 
-All state lives under `%APPDATA%\mcode-island\` — `status.json`, `caller.json`, `config.json`,
-`widget.pid`, `island.log`, `widget.log`. Nothing is uploaded.
+All state lives under `%APPDATA%\mcode-island\` — `status.json`, `caller.json`, `pin.json`,
+`config.json`, `widget.pid`, `island.log`, `widget.log`. Nothing is uploaded.
 
 ## Disclosure
 

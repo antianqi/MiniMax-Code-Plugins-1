@@ -72,6 +72,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<plugin-root>\notify-island
 (`~/.minimax/v2/sessions`,或 `$env:MINIMAX_DATA_DIR` 指定的目录)自己推断状态,
 agent 不推的时候 pill 也能继续动。它只读本机文件。
 
+## 点 pill 会去哪
+
+每次点击都按优先级重新解析目标:
+
+| # | 目标 | 怎么找到 | 点击做什么 |
+| - | ---- | -------- | --------- |
+| 1 | 手动 pin | `pin.json`,由 `mcode-island pin` 写入 | 聚焦那个窗口 |
+| 2 | 桌面端应用主窗口 | 同 session 内名为 `MiniMax Inside Code` / `MiniMax Code` / `Mavis` 的进程 | 聚焦应用主窗口 |
+| 3 | 来源终端窗口 | `caller.json`,由 `notify-island.ps1` 写入 | 窗口可见就隐藏,不可见就唤回并最大化 |
+
+桌面端里 agent 由应用托管,跑在应用开的终端里。藏掉那个终端并不会让 agent 停下来,
+用户只会盯着一条不再变化的 pill,而活还在后台跑 —— 所以桌面端优先聚焦应用主窗口,
+而且只聚焦,不隐藏。
+
+`mcode-island pin` 可以显式指定目标。它写在 `pin.json` 里,和 `caller.json` 分开:
+`caller.json` 每次状态流转都会被覆写,pin 放进去活不过下一次推送。桌面端和 CLI 同时
+开着的时候,用它把点击目标钉回自己的终端。`mcode-island unpin` 解除锁定。
+
 ## 开机自启
 
 `mcode-island autostart-on` 会在 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下写两个具名值
@@ -80,8 +98,8 @@ agent 不推的时候 pill 也能继续动。它只读本机文件。
 
 ## 运行时数据
 
-所有状态都存在 `%APPDATA%\mcode-island\` 下:`status.json`、`caller.json`、`config.json`、
-`widget.pid`、`island.log`、`widget.log`。数据不出本机。
+所有状态都存在 `%APPDATA%\mcode-island\` 下:`status.json`、`caller.json`、`pin.json`、
+`config.json`、`widget.pid`、`island.log`、`widget.log`。数据不出本机。
 
 ## 披露
 
