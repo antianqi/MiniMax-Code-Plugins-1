@@ -277,8 +277,6 @@ $forbiddenPatterns = [ordered]@{
 #   * the detector must not auto-load scripts/lib/Get-5hUsage.ps1 (the package
 #     does not ship it, and a package that reaches for a credential module is
 #     a package that claims to need one),
-#   * the `_s` byte-array helper must not stay behind as dead code once every
-#     literal it built is a plain string,
 #   * mcode-island.cmd must not offer a set-token command that points at a
 #     script the package does not have.
 #
@@ -286,12 +284,6 @@ $forbiddenPatterns = [ordered]@{
 # a block no longer matches, the build fails instead of silently shipping it.
 $blockRemovals = [ordered]@{
   'mcode-status-detect.ps1' = @(
-    @'
-# PS 5.1 parser quirk:
-#   短 ASCII 字符串字面量在 -eq / state= 后会被解析为 cmdlet 参数
-#   所以所有 ASCII 字符串都用 _s (byte[]) helper 构造
-'@,
-    'function _s { param([byte[]]$b) [System.Text.Encoding]::UTF8.GetString($b) }',
     @'
 # 5h 用量 API：每 60s 调一次 minimax /v1/coding_plan/remains，写进 status.json 的 usage5h 字段
 #
@@ -335,6 +327,30 @@ exit /b %errorlevel%
   )
 }
 
+# Removed when present, not required to be present. The upstream detector used
+# to carry a private `_s` byte-array decoder and a comment explaining it; the
+# source now spells its literals out, so these may or may not exist depending
+# on which source revision the package is built from. Either way the package
+# must not carry them.
+$optionalRemovals = [ordered]@{
+  'mcode-status-detect.ps1' = @(
+    @'
+# PS 5.1 parser quirk:
+#   短 ASCII 字符串字面量在 -eq / state= 后会被解析为 cmdlet 参数
+#   所以所有 ASCII 字符串都用 _s (byte[]) helper 构造
+'@,
+    @'
+# 字符串常量
+#   以前这里用 _s (byte[]) 构造，理由是"PS 5.1 在 -eq / state= 后面会把短的
+#   ASCII 字面量当成 cmdlet 参数"。实测下来这些常量都是先赋给变量、后面
+#   只拿变量去比较，字面量从不直接出现在 -eq 后面，所以明文写法在 PS 5.1
+#   下解析 0 错误、行为一致（Windows PowerShell 5.1 实跑 -Once 验证过）。
+#   字节数组只会让常量对阅读者不可见，已全部改回明文。
+'@,
+    'function _s { param([byte[]]$b) [System.Text.Encoding]::UTF8.GetString($b) }'
+  )
+}
+
 # --- helpers ------------------------------------------------------------------
 
 $nonAsciiPattern = '[^\u0020-\u007E\t]'
@@ -366,11 +382,10 @@ function ConvertTo-CommentText {
 function Convert-ByteArrayLiterals {
   # `_s (0x69,0x64,0x6C,0x65)` -> `'idle'`
   #
-  # The upstream plugin builds some string literals from byte arrays. The
-  # Marketplace review rejected that: a literal that is not readable in the
-  # source looks like an attempt to keep something from the reviewer. This
-  # decodes every one of them into the plain string it stands for, and
-  # translates the Chinese ones (the package UI is English).
+  # The upstream plugin used to build some string literals from byte arrays.
+  # The Marketplace review rejected that: a literal that is not readable in
+  # the source looks like an attempt to keep something from the reviewer.
+  # This decodes every one of them into the plain string it stands for.
   param([string]$Text)
 
   $pattern = '_s\s*\(((?:0x[0-9A-Fa-f]{2}\s*,\s*)*0x[0-9A-Fa-f]{2})\)'
@@ -379,12 +394,36 @@ function Convert-ByteArrayLiterals {
     $bytes = @([regex]::Matches($m.Groups[1].Value, '0x([0-9A-Fa-f]{2})') |
       ForEach-Object { [byte][Convert]::ToInt32($_.Groups[1].Value, 16) })
     $value = [System.Text.Encoding]::UTF8.GetString([byte[]]$bytes)
-    if ($byteLiteralTranslations.ContainsKey($value)) {
-      $value = $byteLiteralTranslations[$value]
-    }
     return "'" + $value.Replace("'", "''") + "'"
   }
   return [regex]::Replace($Text, $pattern, $evaluator)
+}
+
+function Convert-ChineseStrings {
+  # The package UI is English, so the Chinese strings the user sees have to
+  # be translated. The source may carry them as a byte array (decoded above)
+  # or as a plain literal, so the table is applied to the text as well.
+  #
+  # Only the content of single-quoted string literals is translated. A
+  # Chinese comment next to the literal stays Chinese and is stripped by
+  # the comment pass, so a source line keeps its own shape.
+  #
+  # Longest key first: 'agent 刚回复，等用户' contains '等用户'.
+  # A Chinese string that is not in the table is left alone, and the
+  # ASCII check at the end of the build fails loudly -- the table cannot
+  # drift silently.
+  param([string]$Text)
+
+  $keys = @($byteLiteralTranslations.Keys) | Sort-Object -Property Length -Descending
+  $evaluator = {
+    param($m)
+    $value = $m.Groups[1].Value
+    foreach ($key in $keys) {
+      if ($value.Contains($key)) { $value = $value.Replace($key, [string]$byteLiteralTranslations[$key]) }
+    }
+    return "'" + $value.Replace("'", "''") + "'"
+  }
+  return [regex]::Replace($Text, "'([^'\r\n]*)'", $evaluator)
 }
 
 function Remove-ChineseComments {
@@ -639,6 +678,10 @@ foreach ($rel in $runtimeFiles) {
   $bytes = [System.IO.File]::ReadAllBytes($srcPath)
   $text = (New-Object System.Text.UTF8Encoding($false)).GetString($bytes)
   if ($text.Length -gt 0 -and [int]$text[0] -eq 0xFEFF) { $text = $text.Substring(1) }
+  # Normalise the line endings before anything else. The removal rules below
+  # are written with LF, and a checkout can be CRLF (core.autocrlf=true) or
+  # LF depending on the machine, so matching has to happen on one shape.
+  $text = $text -replace "`r`n", "`n"
 
   if ($englishReplacements.Contains($rel)) {
     foreach ($rep in $englishReplacements[$rel]) {
@@ -650,6 +693,7 @@ foreach ($rel in $runtimeFiles) {
   }
 
   $text = Convert-ByteArrayLiterals $text
+  $text = Convert-ChineseStrings $text
 
   if ($blockRemovals.Contains($rel)) {
     foreach ($block in $blockRemovals[$rel]) {
@@ -660,6 +704,21 @@ foreach ($rel in $runtimeFiles) {
       $text = $text.Replace($needle, '')
     }
   }
+
+  if ($optionalRemovals.Contains($rel)) {
+    foreach ($block in $optionalRemovals[$rel]) {
+      $needle = $block -replace "`r`n", "`n"
+      if ($text.Contains($needle)) { $text = $text.Replace($needle, '') }
+    }
+  }
+
+  # The source's own note about the byte-array literals is about the source,
+  # not about the package. Drop it in either wording. This runs after the
+  # exact-text removals above: a regex that eats one line of a block would
+  # break the exact match of the block that follows it.
+  $text = [regex]::Replace($text, '(?m)^#.*_s \(byte\[\]\).*\r?\n', '')
+  $text = [regex]::Replace($text, '(?m)^#.*字节数组.*\r?\n', '')
+  $text = [regex]::Replace($text, '(?m)^# 字符串常量\r?\n(?:#[^\r\n]*\r?\n)+', '')
 
   $text = Remove-ChineseComments $text
   if ($rel.EndsWith('.ps1')) {
