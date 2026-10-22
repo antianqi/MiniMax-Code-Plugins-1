@@ -82,6 +82,7 @@ $runtimeFiles = @(
   'stop-detect-island.ps1'
   'scripts/lib/Protect-Text.ps1'
   'scripts/lib/Status-Store.ps1'
+  'scripts/lib/Plan-Usage.ps1'
 )
 
 $copyBinaryFiles = @(
@@ -306,7 +307,7 @@ if (Test-Path "$PSScriptRoot/scripts/lib/Get-5hUsage.ps1") {
 # remains_time（与 lib 的实现一致）。如果实现字段回归，CI step 4 会因为
 # Get-5hUsage 返 null 而 fail。
 '@,
-    '    if ($script:plan5hAvailable) { Refresh-5hUsage }'
+    '    if (-not $script:plan5hFromRuntime -and $script:plan5hAvailable) { Refresh-5hUsage }'
   )
   'mcode-island.cmd' = @(
     'if /i "%1"=="set-token" goto :set_token',

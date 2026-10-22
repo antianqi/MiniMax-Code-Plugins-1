@@ -4,7 +4,7 @@ description: Use this skill to publish the agent's live progress onto a Windows 
 license: Apache-2.0
 metadata:
   author: antianqi
-  version: 0.6.0
+  version: 0.7.0
 ---
 
 # mcode 灵动岛状态条
@@ -133,6 +133,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<plugin-root>\autostart.ps1
 | `widget.log` | widget 内部调试日志 |
 
 **网络访问**:没有。这个包**一次网络请求都不发**,也**不读取任何凭据** —— 不读环境变量里的 token,不读配置文件里的 token,没有 API key,没有遥测。全部在本机运行。
+
+**5 小时用量角标**:如果 MiniMax Code 运行时把套餐用量写到了
+`%APPDATA%\mcode-island\usage.json`,探测器会读它并把百分比和重置倒计时填进
+pill 的角标(读不到就留空,不影响其它功能):
+
+```json
+{
+  "fiveHour": { "remainingPercent": 58, "resetAtMs": 1792800000000, "unlimited": false }
+}
+```
+
+`weekly` 和 `video` 是可选的。运行时没有提供这个文件时,角标就是空的 —— 插件不会自己去问接口。
 
 ## 8. 已知限制
 

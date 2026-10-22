@@ -186,15 +186,24 @@ if ($env:OS -eq 'Windows_NT') {
 Check (-not (Test-Path (Join-Path $pkg 'scripts/lib/Get-5hUsage.ps1'))) 'the 5h-usage module is not in the package'
 Check (-not (Test-Path (Join-Path $pkg 'set-token.ps1'))) 'set-token.ps1 is not in the package'
 
-# --- 6d. the documentation must not advertise a feature the package drops ----
-# The package says "no network, no credentials". A README that still promises a
-# usage badge contradicts that, so the badge may not be mentioned at all.
+# --- 6d. the docs must not advertise a capability the package lacks ----------
+# The package may document the 5h usage readout only when it ships the
+# credential-free reader that fills it. A README that promises a readout the
+# package cannot fill is the same class of defect as a script that points at
+# a file the package does not contain.
+$hasUsageReader = Test-Path (Join-Path $pkg 'scripts/lib/Plan-Usage.ps1')
 foreach ($doc in @('README.md', 'README.zh-CN.md', 'skills/mcode-island/SKILL.md')) {
   $p = Join-Path $pkg $doc
   if (-not (Test-Path $p)) { continue }
   $t = [System.IO.File]::ReadAllText($p)
-  Check (-not ($t -match '5-hour usage|5 小时用量|用量角标|usage badge')) "doc does not advertise a usage badge: $doc"
+  $mentions = ($t -match '5-hour usage|5 ?小时用量|usage badge|用量角标|usage5h')
+  if ($mentions -and -not $hasUsageReader) {
+      Check $false "doc advertises a usage readout the package cannot fill: $doc"
+  } else {
+      Check $true "doc does not advertise a capability the package lacks: $doc"
+  }
 }
+Check ($hasUsageReader) 'the package ships the credential-free usage reader'
 
 # --- 7. no secrets ------------------------------------------------------------
 $secretHits = @()

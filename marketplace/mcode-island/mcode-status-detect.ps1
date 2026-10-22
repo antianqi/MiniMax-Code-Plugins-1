@@ -59,7 +59,6 @@ if ($hwnd -ne [IntPtr]::Zero) {
 }
 
 
-
 # role names
 $S_USER       = 'user'
 $S_ASSISTANT  = 'assistant'
@@ -153,6 +152,7 @@ $cfgFile    = Join-Path $configDir 'config.json'
 # Shared redaction helper (round-20). The detector is the SECOND producer
 # of tool text -- it re-derives messages from mcode's session log rather
 . "$PSScriptRoot/scripts/lib/Protect-Text.ps1"
+. "$PSScriptRoot/scripts/lib/Plan-Usage.ps1"
 # Cross-process status.json protocol (round-21 review #1).
 # both write status.json. They had no mutual exclusion: the detector
 # the lock, the single snapshot read and the atomic replace, so both
@@ -871,6 +871,7 @@ try {
  # 4) 5h 60s status.json widget
     $prevPct  = $script:plan5hRemainingPct
     $prevMs   = $script:plan5hResetMs
+    Get-PlanUsage | Out-Null
 
     $curPct   = $script:plan5hRemainingPct
     $curMs    = $script:plan5hResetMs

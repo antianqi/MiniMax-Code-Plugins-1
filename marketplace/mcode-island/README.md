@@ -109,6 +109,26 @@ All state lives under `%APPDATA%\mcode-island\` — `status.json`, `caller.json`
 - **No Hooks.** The package contains no client event extension and no event declaration. State is
   pushed by the agent and, optionally, inferred by the local detector.
 
+## 5-hour usage readout
+
+The runtime already resolves the token plan with the user's own login (the mcode launcher's
+"MCode status" panel renders it, footer: "Local view · credentials hidden"). When the runtime
+writes that result to a local file, this package reads it — no credential, no request:
+
+```json
+// %APPDATA%\mcode-island\usage.json
+{
+  "fetchedAtMs": 1792800000000,
+  "fiveHour": { "remainingPercent": 58, "resetAtMs": 1792800000000, "unlimited": false },
+  "weekly":    { "remainingPercent": 40, "resetAtMs": 1792900000000, "unlimited": false },
+  "video":     { "remainingCount": 12, "totalCount": 40 }
+}
+```
+
+`fiveHour` is required; `weekly` and `video` are optional. `MCODE_PLAN_USAGE_FILE` overrides the
+path and `~/.minimax/usage.json` is read as a fallback. Without that file the badge stays empty —
+the package never asks the API on its own.
+
 ## Relationship to the upstream plugin
 
 This directory is the Marketplace submission build of `plugins/antianqi/mcode-island`. It is
