@@ -1,8 +1,8 @@
+@echo off
 if not "%OS%"=="Windows_NT" (
-  echo mcode-island supports Windows only (this host is not Windows).
+  echo mcode-island supports Windows only - this host is not Windows.
   exit /b 1
 )
-@echo off
 chcp 65001 >nul
 setlocal
 set "SCRIPT_DIR=%~dp0"
@@ -21,9 +21,9 @@ if /i "%1"=="autostart-off" goto :autostart_off
 if /i "%1"=="detect-on" goto :detect_on
 if /i "%1"=="detect-off" goto :detect_off
 if /i "%1"=="detect-status" goto :detect_status
-if /i "%1"=="set-token" goto :set_token
 
-echo Usage: mcode-island {start ^| stop ^| status ^| show ^| hide ^| pin ^| unpin ^| autostart-on ^| autostart-off ^| detect-on ^| detect-off ^| detect-status ^| set-token}
+
+echo Usage: mcode-island {start ^| stop ^| status ^| show ^| hide ^| pin ^| unpin ^| autostart-on ^| autostart-off ^| detect-on ^| detect-off ^| detect-status}
 exit /b 1
 
 :start
@@ -74,15 +74,4 @@ exit /b %errorlevel%
 %PS% -File "%SCRIPT_DIR%status-detect-island.ps1"
 exit /b %errorlevel%
 
-:set_token
-if "%2"=="" goto :set_token_show
-if /i "%2"=="-show" goto :set_token_show
-if /i "%2"=="-clear" goto :set_token_clear
-%PS% -File "%SCRIPT_DIR%set-token.ps1" "%2"
-exit /b %errorlevel%
-:set_token_show
-%PS% -File "%SCRIPT_DIR%set-token.ps1" -Show
-exit /b %errorlevel%
-:set_token_clear
-%PS% -File "%SCRIPT_DIR%set-token.ps1" -Clear
-exit /b %errorlevel%
+

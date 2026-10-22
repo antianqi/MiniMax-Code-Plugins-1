@@ -126,8 +126,8 @@ all of them required by the Marketplace package rules:
    Chinese documentation live in the upstream plugin and in `README.zh-CN.md` and
    `skills/mcode-island/SKILL.md`.
 
-The hosted plugin in `plugins/antianqi/mcode-island` keeps its Chinese UI, its 5-hour usage
-badge and its local installation flow.
+The hosted plugin in `plugins/antianqi/mcode-island` keeps its Chinese UI and its local
+installation flow.
 
 ## License
 

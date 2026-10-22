@@ -106,7 +106,7 @@ agent 不推的时候 pill 也能继续动。它只读本机文件。
 4. 界面文案这里是英文;中文界面、中文控制台输出和完整中文文档在上游插件以及
    `README.zh-CN.md`、`skills/mcode-island/SKILL.md` 里。
 
-上游的 `plugins/antianqi/mcode-island` 保留中文界面、5 小时用量角标和本机安装流程。
+上游的 `plugins/antianqi/mcode-island` 保留中文界面和本机安装流程。
 
 ## 许可
 

@@ -146,6 +146,12 @@ $forbidden = [ordered]@{
   '[char]0x'            = 'an obfuscated code-point literal'
   '.minimax-code'       = 'a dependency on the MiniMax Code CLI'
   'mcode-active'        = 'a dependency on the MiniMax Code CLI'
+  'Get-5hUsage'         = 'a reference to the credential module'
+  'plan5hAvailable'     = 'a reference to the credential module'
+  'Resolve-PlanToken'   = 'a reference to the credential module'
+  'set-token'           = 'a command that stores a credential'
+  'set_token'           = 'a command that stores a credential'
+  'function _s'         = 'the leftover byte-array helper'
 }
 foreach ($pattern in $forbidden.Keys) {
   $hits = @()
@@ -165,9 +171,30 @@ foreach ($f in $allFiles | Where-Object { $_.Extension -eq '.ps1' }) {
 $cmdText = [System.IO.File]::ReadAllText((Join-Path $pkg 'mcode-island.cmd'))
 Check ($cmdText.Contains('Windows_NT')) 'mcode-island.cmd carries the Windows-only guard'
 
+# The .cmd shim is batch, not PowerShell: the parser above cannot check it.
+# Run it instead. An unknown argument must print the usage line and exit 1,
+# and cmd.exe must not report a syntax error while parsing the file.
+if ($env:OS -eq 'Windows_NT') {
+  $shim = Join-Path $pkg 'mcode-island.cmd'
+  $out = & cmd.exe /c "`"$shim`" __audit_unknown_verb__" 2>&1 | Out-String
+  Check (-not ($out -match 'was unexpected at this time')) 'mcode-island.cmd parses under cmd.exe' ($out.Trim() -split "`r?`n" | Select-Object -First 2 | Out-String).Trim()
+  Check ($out -match 'Usage: mcode-island') 'mcode-island.cmd prints its usage line'
+  Check (-not ($out -match 'set-token')) 'mcode-island.cmd does not advertise set-token'
+}
+
 # --- 6c. the 5h-usage module and the token helper are not shipped ------------
 Check (-not (Test-Path (Join-Path $pkg 'scripts/lib/Get-5hUsage.ps1'))) 'the 5h-usage module is not in the package'
 Check (-not (Test-Path (Join-Path $pkg 'set-token.ps1'))) 'set-token.ps1 is not in the package'
+
+# --- 6d. the documentation must not advertise a feature the package drops ----
+# The package says "no network, no credentials". A README that still promises a
+# usage badge contradicts that, so the badge may not be mentioned at all.
+foreach ($doc in @('README.md', 'README.zh-CN.md', 'skills/mcode-island/SKILL.md')) {
+  $p = Join-Path $pkg $doc
+  if (-not (Test-Path $p)) { continue }
+  $t = [System.IO.File]::ReadAllText($p)
+  Check (-not ($t -match '5-hour usage|5 小时用量|用量角标|usage badge')) "doc does not advertise a usage badge: $doc"
+}
 
 # --- 7. no secrets ------------------------------------------------------------
 $secretHits = @()

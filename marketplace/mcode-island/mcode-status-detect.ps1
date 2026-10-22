@@ -22,9 +22,7 @@
 # a state pushed by the agent (source != detector) is kept
 # the detector may override it with idle / error (fallback)
 # the detector never overrides working / thinking / done
-# PS 5.1 parser quirk:
-# ASCII -eq / state= cmdlet
-# ASCII _s (byte[]) helper
+
 
 param(
   [switch]$Once,
@@ -60,7 +58,7 @@ if ($hwnd -ne [IntPtr]::Zero) {
   [void][DetectHide]::ShowWindow($hwnd, 0)
 }
 
-function _s { param([byte[]]$b) [System.Text.Encoding]::UTF8.GetString($b) }
+
 
 # role names
 $S_USER       = 'user'
@@ -151,17 +149,7 @@ $logFile    = Join-Path $configDir 'island.log'
 $pidFile    = Join-Path $configDir 'detect.pid'
 $cfgFile    = Join-Path $configDir 'config.json'
 
-# 5h usage badge: optional, only active when scripts/lib/Get-5hUsage.ps1 is present
-# ** ** URL token
-# scripts/lib/Get-5hUsage.ps1 detector " lib "
-# lib MiniMax Marketplace 5h
-# token status.json usage5h
-$script:plan5hAvailable = $false
-if (Test-Path "$PSScriptRoot/scripts/lib/Get-5hUsage.ps1") {
-  . "$PSScriptRoot/scripts/lib/Get-5hUsage.ps1"
-  $script:plan5hAvailable = $true
-  Resolve-PlanToken
-}
+
 # Shared redaction helper (round-20). The detector is the SECOND producer
 # of tool text -- it re-derives messages from mcode's session log rather
 . "$PSScriptRoot/scripts/lib/Protect-Text.ps1"
@@ -716,11 +704,7 @@ function Write-StatusUnderLock($state, $message, $family, [switch]$MetadataRefre
   Write-StatusSnapshot -Payload $payload -Previous $prev
 }
 
-# 5h scripts/lib/Get-5hUsage.ps1 lib
-# detector token
-# fixture model_name / current_interval_remaining_percent /
-# remains_time lib CI step 4
-# Get-5hUsage null fail
+
 
 # todowrite todos
 # mtime mcode 1 todo
@@ -887,7 +871,7 @@ try {
  # 4) 5h 60s status.json widget
     $prevPct  = $script:plan5hRemainingPct
     $prevMs   = $script:plan5hResetMs
-    if ($script:plan5hAvailable) { Refresh-5hUsage }
+
     $curPct   = $script:plan5hRemainingPct
     $curMs    = $script:plan5hResetMs
     $usageChanged = ($prevPct -ne $curPct) -or ($prevMs -ne $curMs) -and ($null -ne $curPct)

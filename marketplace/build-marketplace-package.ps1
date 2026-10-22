@@ -186,8 +186,10 @@ $englishReplacements = [ordered]@{
 #   the detector may override it with idle / error (fallback)
 #   the detector never overrides working / thinking / done
 '@ }
-    @{ from = '# 5h 用量 API：每 60s 调一次 minimax /v1/coding_plan/remains，写进 status.json 的 usage5h 字段'
-       to   = '# 5h usage badge: optional, only active when scripts/lib/Get-5hUsage.ps1 is present' }
+  )
+  'mcode-island.cmd' = @(
+    @{ from = ' ^| detect-status ^| set-token}'
+       to   = ' ^| detect-status}' }
   )
   'wrap-tool.ps1' = @(
     @{ from = '"$brief 完成"'
@@ -268,6 +270,69 @@ $forbiddenPatterns = [ordered]@{
   'io.minimax.mcode'   = 'the Hook client extension'
   'hooks.json'         = 'a Hook declaration'
   '"hooks"'            = 'a Hook declaration'
+}
+
+# --- blocks that exist upstream but must not ship -----------------------------
+# The Marketplace review asks for these to be gone from the package:
+#   * the detector must not auto-load scripts/lib/Get-5hUsage.ps1 (the package
+#     does not ship it, and a package that reaches for a credential module is
+#     a package that claims to need one),
+#   * the `_s` byte-array helper must not stay behind as dead code once every
+#     literal it built is a plain string,
+#   * mcode-island.cmd must not offer a set-token command that points at a
+#     script the package does not have.
+#
+# Every block is removed by its exact text: if the upstream source changes and
+# a block no longer matches, the build fails instead of silently shipping it.
+$blockRemovals = [ordered]@{
+  'mcode-status-detect.ps1' = @(
+    @'
+# PS 5.1 parser quirk:
+#   短 ASCII 字符串字面量在 -eq / state= 后会被解析为 cmdlet 参数
+#   所以所有 ASCII 字符串都用 _s (byte[]) helper 构造
+'@,
+    'function _s { param([byte[]]$b) [System.Text.Encoding]::UTF8.GetString($b) }',
+    @'
+# 5h 用量 API：每 60s 调一次 minimax /v1/coding_plan/remains，写进 status.json 的 usage5h 字段
+#
+# 这是一个**可选**能力。真正干活的代码（URL、请求头、token 解析、刷新逻辑）
+# 全部在 scripts/lib/Get-5hUsage.ps1 里，detector 这里只判断"这个 lib 在不在"。
+#
+# lib 不在时（MiniMax Marketplace 的上架包就不携带它），整条 5h 链路直接关闭：
+# 不读任何 token、不发任何网络请求、status.json 里也没有 usage5h 字段。
+$script:plan5hAvailable = $false
+if (Test-Path "$PSScriptRoot/scripts/lib/Get-5hUsage.ps1") {
+  . "$PSScriptRoot/scripts/lib/Get-5hUsage.ps1"
+  $script:plan5hAvailable = $true
+  Resolve-PlanToken
+}
+'@,
+    @'
+# 5h 用量的取值与刷新都在 scripts/lib/Get-5hUsage.ps1 里（lib 不在时整条
+# 链路关闭，detector 这边不碰 token、不联网）。
+# 字段名契约：fixture 用 model_name / current_interval_remaining_percent /
+# remains_time（与 lib 的实现一致）。如果实现字段回归，CI step 4 会因为
+# Get-5hUsage 返 null 而 fail。
+'@,
+    '    if ($script:plan5hAvailable) { Refresh-5hUsage }'
+  )
+  'mcode-island.cmd' = @(
+    'if /i "%1"=="set-token" goto :set_token',
+    @'
+:set_token
+if "%2"=="" goto :set_token_show
+if /i "%2"=="-show" goto :set_token_show
+if /i "%2"=="-clear" goto :set_token_clear
+%PS% -File "%SCRIPT_DIR%set-token.ps1" "%2"
+exit /b %errorlevel%
+:set_token_show
+%PS% -File "%SCRIPT_DIR%set-token.ps1" -Show
+exit /b %errorlevel%
+:set_token_clear
+%PS% -File "%SCRIPT_DIR%set-token.ps1" -Clear
+exit /b %errorlevel%
+'@
+  )
 }
 
 # --- helpers ------------------------------------------------------------------
@@ -448,20 +513,35 @@ function Add-WindowsGuard {
 }
 
 function Add-CmdWindowsGuard {
-  # The .cmd shim is a batch file: the guard has to be cmd syntax and cannot
-  # contain a BOM, otherwise cmd.exe chokes on the first line.
+  # The .cmd shim is a batch file: the guard has to be cmd syntax, must not
+  # contain a BOM, and must not put an unbalanced parenthesis inside the
+  # if-block (cmd.exe parses the whole block before it runs it, so an
+  # unescaped ")" inside the echo text breaks the file).
   param([string]$Text)
 
   $guard = @'
 if not "%OS%"=="Windows_NT" (
-  echo mcode-island supports Windows only (this host is not Windows).
+  echo mcode-island supports Windows only - this host is not Windows.
   exit /b 1
 )
 '@
   $guardLines = ($guard -split "`r?`n")
+  $lines = $Text -split "`r?`n"
+
+  # insert after "@echo off" when it is there, so the guard does not print
+  # before the echo mode is turned off
+  $insertAt = 0
+  for ($i = 0; $i -lt $lines.Count; $i++) {
+    if ($lines[$i].Trim() -match '^@?echo\s+off') { $insertAt = $i + 1; break }
+  }
+
   $out = New-Object System.Collections.Generic.List[string]
-  foreach ($g in $guardLines) { $out.Add($g) }
-  foreach ($l in ($Text -split "`r?`n")) { $out.Add($l) }
+  for ($i = 0; $i -lt $lines.Count; $i++) {
+    if ($i -eq $insertAt) { foreach ($g in $guardLines) { $out.Add($g) } }
+    $out.Add($lines[$i])
+  }
+  if ($insertAt -ge $lines.Count) { foreach ($g in $guardLines) { $out.Add($g) } }
+
   return ($out -join "`n")
 }
 
@@ -570,6 +650,17 @@ foreach ($rel in $runtimeFiles) {
   }
 
   $text = Convert-ByteArrayLiterals $text
+
+  if ($blockRemovals.Contains($rel)) {
+    foreach ($block in $blockRemovals[$rel]) {
+      $needle = $block -replace "`r`n", "`n"
+      if (-not $text.Contains($needle)) {
+        throw "removal block not found in ${rel}: $needle"
+      }
+      $text = $text.Replace($needle, '')
+    }
+  }
+
   $text = Remove-ChineseComments $text
   if ($rel.EndsWith('.ps1')) {
     $text = Add-WindowsGuard $text
