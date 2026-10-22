@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "name": "mcode-island",
+  "displayName": "mcode 灵动岛状态条 / mcode Dynamic Island",
+  "version": "0.6.0",
+  "description": "在 Windows 桌面顶部显示一条灵动岛状态条，让用户不用切回终端窗口就能看到 agent 正在思考、执行工具、等待确认还是已经完成。支持 idle / thinking / working / waiting / done / error 六种状态与子步骤进度。纯本地运行：不联网、不读取任何凭据。 / Show a Dynamic Island status pill on the Windows desktop so the user can follow the agent's progress without switching back to the terminal. Six states plus sub-step progress. Runs entirely locally: no network access, no credentials.",
+  "author": "antianqi",
+  "icon": "icon.png",
+  "category": "Productivity",
+  "exampleQueries": [
+    "在桌面顶部开一条状态条，让我不用切回窗口也能看到你在做什么 / Open the desktop status pill so I can follow your progress without switching back to the terminal",
+    "把状态条钉在当前这个终端窗口上 / Pin the status pill to this terminal window",
+    "我现在在等你选，状态条要显示 waiting / Show waiting on the pill, I am being asked to choose"
+  ],
+  "apps": [],
+  "mcpServers": [],
+  "skills": [
+    "skills/mcode-island/SKILL.md"
+  ]
+}
