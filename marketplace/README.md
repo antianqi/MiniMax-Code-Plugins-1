@@ -77,3 +77,70 @@ The package is submitted through the
 as a GitHub source: point the repository URL at this repository, the ref at the branch or tag that
 holds the package, and the subdirectory at `marketplace/<plugin-name>`. The guide is the
 [MiniMax Plugin 开发与上架指南](https://vrfi1sk8a0.feishu.cn/wiki/QlTLwbAGNiACwLkWI85cFxHzn4L).
+
+### The field values, field by field
+
+The form has 11 questions. For `mcode-island` at v0.8.1 they are:
+
+| #  | question                           | value                                                                          |
+| -- | ---------------------------------- | ------------------------------------------------------------------------------ |
+| 1  | Plugin name                        | `mcode-island`                                                                 |
+| 2  | Operation type                     | 更新插件 / Update the plugin.                                                  |
+| 3  | Source type                        | GitHub                                                                         |
+| 4  | GitHub repository URL              | `https://github.com/antianqi/MiniMax-Code-Plugins-1`                          |
+| 5  | GitHub ref                         | `marketplace-v0.8.1` (the tag that holds the package)                          |
+| 6  | GitHub subdirectory                | `marketplace/mcode-island`                                                     |
+| 7  | Target region                      | CN                                                                             |
+| 8  | Delivery target                    | 桌面端 / Desktop                                                               |
+| 9  | Maintenance authorization evidence | the block below                                                                |
+| 10 | Organization or team               | 安天齐                                                                          |
+| 11 | Contact email (submitter)          | `antianqi_2020@qq.com`                                                         |
+
+Three things that cost a submission if they are wrong:
+
+- **Question 1** must equal the name already listed in the Marketplace (`mcode-island`). A display
+  name, a Chinese name or an upper-case name is rejected.
+- **Question 4** takes the repository root only. A `/tree/...` URL is not accepted; the tag goes
+  into question 5.
+- **Question 7** takes one region per submission. Publishing to CN and US means two submissions
+  with two `submission_id`s, and the operation type is chosen per region (CN is an update, US is
+  a new plugin).
+
+### The maintenance authorization evidence (question 9)
+
+Required for an update of an already listed plugin. As of v0.8.1:
+
+```
+该 Plugin 已上架于官方 Marketplace,现有版本 mcode-island 0.5.1(可用
+`mcode plugin list --marketplace official` 核验),本次为该 Plugin 的更新提交。
+
+可人工核验的维护关系与材料:
+
+1. 上架包所在公开仓库(仓库 owner 即本插件作者账号 antianqi):
+   https://github.com/antianqi/MiniMax-Code-Plugins-1
+2. 本次提交对应的 tag 与子目录(tag 指向 commit 1f856d2):
+   https://github.com/antianqi/MiniMax-Code-Plugins-1/tree/marketplace-v0.8.1/marketplace/mcode-island
+3. Marketplace 中已上架的 0.5.1 由同一账号 antianqi 提交,历史受理记录包括
+   PLUGIN-202610210195、PLUGIN-202610220196、PLUGIN-202610220200。
+4. 插件源码与上架包在同一仓库维护:源码在 plugins/antianqi/mcode-island,
+   上架包由 marketplace/build-marketplace-package.ps1 从该源码生成,
+   并由 marketplace/audit-marketplace-package.ps1 自动审计(228 项检查,0 失败)。
+
+本次更新(v0.8.0 → v0.8.1)内容:
+- v0.8.0 点击行为适配桌面端:点 pill 聚焦桌面应用主窗口(MiniMax Inside Code /
+  MiniMax Code / Mavis),不再隐藏终端;优先级为 手动 pin > 桌面端应用窗口 >
+  来源终端窗口(保留原来的显隐切换)。手动 pin 从 caller.json 移到独立的
+  pin.json,不再被状态流转覆写。
+- v0.8.1 修状态探测器的一个真实缺陷:会话日志的单行可以很大(读截图会把
+  base64 图片写进同一行,实测 200KB - 560KB),探测器原来只回看末尾 64KB,
+  遇到这种大行就解析失败并回退到"上一条缓存的推断"——而那条推断属于上一个
+  会话,于是新对话里状态条一直停在上一个任务完成的状态。现在改为按需扩大
+  回看窗口直到读到完整的一行,缓存按 路径+修改时间 双键,读失败时不再借用
+  别的会话的状态。
+
+包仍满足上架规则:纯 ASCII、无 BOM、无凭据、无 Hook、仅 MiniMax Plugin V1
+manifest,所有 .ps1 带 Windows 平台守卫。
+```
+
+Update the version, the tag, the commit id and the changelog paragraph when a new package
+version is cut; everything else in the table stays as it is.
