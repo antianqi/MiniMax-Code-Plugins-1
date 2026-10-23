@@ -205,6 +205,32 @@ foreach ($doc in @('README.md', 'README.zh-CN.md', 'skills/mcode-island/SKILL.md
 }
 Check ($hasUsageReader) 'the package ships the credential-free usage reader'
 
+# --- 6e. the desktop profile ----------------------------------------------------
+# The package is the desktop build. The CLI install prefers the caller's
+# terminal (one click hides it, the next brings it back); here the agent is
+# hosted by the desktop app, so the click has to focus the app window. The
+# builder flips that one line in the source; this check makes sure the
+# flipped value actually shipped, because a package that quietly kept the
+# CLI behaviour would hide the user's terminal and leave a static pill
+# behind -- the exact complaint the desktop build exists to answer.
+$widgetPath = Join-Path $pkg 'mcode-island.ps1'
+if (-not (Test-Path $widgetPath)) {
+    Check $false 'mcode-island.ps1 missing (the desktop profile cannot be checked)'
+} else {
+    $widgetText = [System.IO.File]::ReadAllText($widgetPath)
+    $pref = [regex]::Match($widgetText, '\$script:clickPrefers\s*=\s*''([a-z]+)''')
+    if (-not $pref.Success) {
+        Check $false 'mcode-island.ps1 does not declare $script:clickPrefers -- the package cannot be told apart from the CLI install'
+    } else {
+        Check ($pref.Groups[1].Value -eq 'app') "the package ships the desktop click profile (clickPrefers = '$($pref.Groups[1].Value)', expected 'app')"
+    }
+    if ($widgetText -match '\$script:clickPrefers\s+-eq\s+''app''') {
+        Check $true 'the package resolver branches on the click preference'
+    } else {
+        Check $false 'the package resolver does not branch on $script:clickPrefers, so the two builds cannot differ'
+    }
+}
+
 # --- 7. no secrets ------------------------------------------------------------
 $secretHits = @()
 foreach ($f in $allFiles) {

@@ -4,7 +4,7 @@ description: Use this skill to publish the agent's live progress onto a Windows 
 license: Apache-2.0
 metadata:
   author: antianqi
-  version: 0.8.1
+  version: 0.8.2
 ---
 
 # mcode 灵动岛状态条

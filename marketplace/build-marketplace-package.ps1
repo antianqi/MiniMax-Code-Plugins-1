@@ -96,6 +96,31 @@ $copyBinaryFiles = @(
   'assets/wrap-demo.png'
 )
 
+# --- the desktop profile ----------------------------------------------------
+# The Marketplace build and the CLI install are two different products, and
+# the difference is real, not cosmetic:
+#
+#   CLI install    -- the plugin as it is. The CLI runtime loads the
+#                     io.minimax.mcode hooks, so the agent pushes the state
+#                     itself, and a click keeps the CLI habit of hiding the
+#                     terminal and bringing it back.
+#   Marketplace    -- the desktop app. The package ships no Hook material
+#                     (the submission rules forbid it), so the detector is
+#                     the only source of state; and the agent is hosted by
+#                     the app, so the terminal belongs to the app session
+#                     and hiding it leaves a static pill behind. The click
+#                     has to focus the app window instead.
+#
+# This flips ONE line in the source. The build FAILS when the line is not
+# found: a renamed switch must not silently ship the CLI behaviour to the
+# desktop users.
+$desktopProfile = [ordered]@{
+  'mcode-island.ps1' = @(
+    @{ from = '$script:clickPrefers = ''terminal'''
+       to   = '$script:clickPrefers = ''app''' }
+  )
+}
+
 # --- user-visible Chinese -> plain English -----------------------------------
 # Console diagnostics and the widget labels. The Chinese UI of the hosted
 # plugin lives in plugins/antianqi/mcode-island; the Marketplace package is the
@@ -683,6 +708,15 @@ foreach ($rel in $runtimeFiles) {
   # are written with LF, and a checkout can be CRLF (core.autocrlf=true) or
   # LF depending on the machine, so matching has to happen on one shape.
   $text = $text -replace "`r`n", "`n"
+
+  if ($desktopProfile.Contains($rel)) {
+    foreach ($rep in $desktopProfile[$rel]) {
+      if (-not $text.Contains($rep.from)) {
+        throw "profile source not found in ${rel}: $($rep.from)"
+      }
+      $text = $text.Replace($rep.from, $rep.to)
+    }
+  }
 
   if ($englishReplacements.Contains($rel)) {
     foreach ($rep in $englishReplacements[$rel]) {
