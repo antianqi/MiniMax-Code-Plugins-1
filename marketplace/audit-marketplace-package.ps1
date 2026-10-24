@@ -152,6 +152,8 @@ $forbidden = [ordered]@{
   'set-token'           = 'a command that stores a credential'
   'set_token'           = 'a command that stores a credential'
   'function _s'         = 'the leftover byte-array helper'
+  'ELECTRON_RUN_AS_NODE' = 'borrowing the MiniMax Code program to run a script'
+  'runtime-state.sqlite' = 'the runtime''s own database'
 }
 foreach ($pattern in $forbidden.Keys) {
   $hits = @()

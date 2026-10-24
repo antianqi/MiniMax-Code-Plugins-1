@@ -32,14 +32,11 @@ $script:lastGroups = @{}
 # detector session
 $script:SEED_WINDOW_MS = 30 * 60 * 1000
 
-# SQLite
-# lib " "
-
-$script:runtimeTitlesAvailable = $false
-if (Test-Path (Join-Path $PSScriptRoot 'Runtime-Titles.ps1')) {
-  . (Join-Path $PSScriptRoot 'Runtime-Titles.ps1')
-  $script:runtimeTitlesAvailable = $true
-}
+# SQLite MiniMax
+# Code node node
+# Protect-SecretText scripts/lib/Protect-Text.ps1
+# detector dot-source lib dot-source
+$script:canRedact = [bool](Get-Command Protect-SecretText -ErrorAction SilentlyContinue)
 
 # session " "
 # - " " mtime toolCall
@@ -49,6 +46,10 @@ if (Test-Path (Join-Path $PSScriptRoot 'Runtime-Titles.ps1')) {
 # 40 mtime " "
 # 60 detector
 $script:ACTIVE_WINDOW_MS = 60 * 1000
+
+# sessions.json
+# 30 " "
+$script:PRUNE_AFTER_MS = 30 * 60 * 1000
 
 # agent
 # toolCall toolResult " "
@@ -157,6 +158,7 @@ function Get-SessionTitle($file) {
     $title = ''
   }
   if ($title.Length -gt 40) { $title = $title.Substring(0, 40) + '...' }
+  $title = Protect-SessionText $title
   $script:sessionTitleCache[$file] = $title
   return $title
 }
@@ -260,7 +262,10 @@ function Get-SessionPreview($msg) {
     break
   }
   if (-not $text) { return '' }
-  return $text
+ # + " " sessions.json
+ # 120
+  if ($text.Length -gt 120) { $text = $text.Substring(0, 120) + '...' }
+  return (Protect-SessionText $text)
 }
 
 # toolCall
@@ -280,14 +285,22 @@ function Get-SessionLastTool($msg) {
   return ''
 }
 
-# session
-# SQLite " MCode 0.6.13
-# " URL
-function Get-SessionDisplayTitle([string]$id, [string]$log) {
-  if ($script:runtimeTitlesAvailable) {
-    $t = Get-RuntimeSessionTitle $id
-    if ($t) { return $t }
+# ** ** token
+# sessions.json
+function Protect-SessionText([string]$text) {
+  if (-not $text) { return '' }
+  if (-not $script:canRedact) {
+ # lib dot-source
+    $script:canRedact = [bool](Get-Command Protect-SecretText -ErrorAction SilentlyContinue)
   }
+  if (-not $script:canRedact) { return $text }
+  try { return [string](Protect-SecretText -Text $text) } catch { return $text }
+}
+
+# session
+# SQLite
+# MiniMax Code node
+function Get-SessionDisplayTitle([string]$log) {
   return (Get-SessionTitle $log)
 }
 
@@ -326,6 +339,7 @@ function Update-SessionTracker {
 
   $groups = Get-SessionLogGroups $sessionsRoot
   $now = [DateTime]::UtcNow
+  $nowMs = [int64]([DateTimeOffset]::new($now).ToUnixTimeMilliseconds())
 
   foreach ($id in @($groups.Keys)) {
     $g = $groups[$id]
@@ -345,6 +359,13 @@ function Update-SessionTracker {
       continue
     }
 
+ # Get-LastJsonLine 400
+ # 400
+    if (-not $entry) {
+      $ageMs = ($now - $g.MTime).TotalMilliseconds
+      if ($ageMs -gt $script:ACTIVE_WINDOW_MS) { continue }
+    }
+
     $msg = Get-LastJsonLine $g.Log
     if (-not $msg) { continue }
     $phase = Get-SessionState $msg
@@ -353,9 +374,6 @@ function Update-SessionTracker {
  # session " "
  # mtime
  # toolCall toolCall
-      $ageMs = ($now - $g.MTime).TotalMilliseconds
-      if ($ageMs -gt $script:ACTIVE_WINDOW_MS) { continue }
-
       $cycle = 1
       if ($script:dismissedSessions.ContainsKey($id)) {
         $d = $script:dismissedSessions[$id]
@@ -370,7 +388,7 @@ function Update-SessionTracker {
       }
       $script:trackedSessions[$id] = @{
         Id = $id
-        Title = (Get-SessionDisplayTitle $id $g.Log)
+        Title = (Get-SessionDisplayTitle $g.Log)
         Phase = $phase
         Cycle = $cycle
         MTime = $g.MTime
@@ -384,7 +402,7 @@ function Update-SessionTracker {
  # tab mcode
  # tab
  # tab
-        Titles = @(@((Get-SessionDisplayTitle $id $g.Log), (Get-SessionTitle $g.Log)) | Where-Object { $_ } | Select-Object -Unique)
+        Titles = @(@((Get-SessionDisplayTitle $g.Log)) | Where-Object { $_ } | Select-Object -Unique)
         LastAtMs = [int64]([DateTimeOffset]::new($g.MTime).ToUnixTimeMilliseconds())
         Dir = $g.Dir
       }
@@ -421,23 +439,33 @@ function Update-SessionTracker {
     $entry.LastAtMs = $newAtMs
  # 8 tab
  # detector sessions.json
-    $newTitle = (Get-SessionDisplayTitle $id $g.Log)
+    $newTitle = (Get-SessionDisplayTitle $g.Log)
     if ($newTitle) {
  # tab
-      $hist = @(@($entry.Titles) + @($newTitle) + @((Get-SessionTitle $g.Log)) | Where-Object { $_ } | Select-Object -Unique)
+      $hist = @(@($entry.Titles) + @($newTitle) | Where-Object { $_ } | Select-Object -Unique)
       if ($hist.Count -gt 8) { $hist = @($hist | Select-Object -Last 8) }
       $entry.Titles = $hist
     }
- # node
- # Get-RuntimeSessionTitle 60s
-    if ($script:runtimeTitlesAvailable) {
-      $rt = Get-RuntimeSessionTitle $id
-      if ($rt -and $rt -ne $entry.Title) {
-        $entry.Title = $rt
-        $script:sessionsDirty = $true
-      }
-    }
     if (-not $entry.Title) { $entry.Title = (Get-SessionTitle $g.Log) }
+  }
+
+ # sessions.json
+ # LastAtMs 30
+  $pruned = 0
+  foreach ($id in @($script:trackedSessions.Keys)) {
+    $e = $script:trackedSessions[$id]
+    $lastMs = $e.LastAtMs
+    if (-not $lastMs) { $lastMs = $e.SinceMs }
+    if (-not $lastMs) { continue }
+    if (($nowMs - [int64]$lastMs) -gt $script:PRUNE_AFTER_MS) {
+      $script:trackedSessions.Remove($id)
+      $script:dismissedSessions.Remove($id)
+      $pruned++
+    }
+  }
+  if ($pruned -gt 0) {
+    $script:sessionsDirty = $true
+    Log-Line ("sessions pruned: " + $pruned)
   }
 }
 

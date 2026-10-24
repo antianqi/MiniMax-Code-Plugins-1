@@ -112,19 +112,38 @@ way to point the click at your own terminal while the desktop app is open.
 Resting the mouse on the pill expands a list of **every session that is
 currently live**, not just the one the detector happens to be following. Each
 row carries the status dot (the same words and colours the pill uses), the
-session's real name, the last thing that session said, and how long ago it
-moved.
+session's title, the last thing that session said, and how long ago it moved.
+
+**What is read, and what is not.** The list is fed by the detector, which
+reads the session logs the runtime already writes on this machine:
+
+- **the first user message** of a session — its title;
+- **the last message** of a session — its preview and its state;
+- **the log's mtime** — how long ago the session moved, and whether it is
+  still alive.
+
+Nothing else is read. The runtime's own database is not read, and the
+MiniMax Code programme is not borrowed to run anything: the title is simply
+the first thing the user said, which is what the app shows in its own
+sidebar too.
+
+**Truncated and redacted before it is stored or shown.** A title and a
+preview are things a user said — they can contain a key. Both are cut to a
+fixed length and passed through the plugin's secret redactor **before** they
+are written to `sessions.json` and before they are drawn on screen.
+
+**The list is cleaned up.** The list is "the sessions that are alive now",
+not a history. A session that has not moved for 30 minutes is dropped from
+the list and from `sessions.json`, and comes back when it moves again.
 
 **Clicking a row goes back to that session.** The widget first looks for the
 Windows Terminal tab that runs it and selects that tab. If the session lives
-in the desktop app instead, the widget switches the app to that conversation
-— the app's sidebar row is a button whose accessible name is the session
-name, so the widget invokes it through UI Automation. A row click never opens
-a second terminal for a session that is already open somewhere else.
-
-The session name comes from the runtime's own store. When that store cannot
-be read, the row falls back to the first thing the user said in that
-session, so a row is never blank.
+in the desktop app instead, the widget switches the app to that conversation:
+the app's sidebar row is a button whose accessible name is the session name,
+so the widget finds the sidebar's conversation list and invokes the row there.
+The search is scoped to that list, not to the whole window. A row click
+never opens a second terminal for a session that is already open somewhere
+else.
 
 ## Autostart
 

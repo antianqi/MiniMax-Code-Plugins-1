@@ -84,7 +84,6 @@ $runtimeFiles = @(
   'scripts/lib/Status-Store.ps1'
   'scripts/lib/Plan-Usage.ps1'
   'scripts/lib/Session-Tracker.ps1'
-  'scripts/lib/Runtime-Titles.ps1'
 )
 
 $copyBinaryFiles = @(
@@ -160,46 +159,6 @@ $englishReplacements = [ordered]@{
     # about a credential module reads like a package that needs one.
     @{ from = '# (Refresh-5hUsage, in Get-5hUsage.ps1) is TTL-gated: it refills the'
        to   = '# The refresh is TTL-gated: it refills the' }
-  )
-  'scripts/lib/Runtime-Titles.ps1' = @(
-    # The CLI's own node is a path this build may not know about: the
-    # package must not depend on the MiniMax Code CLI being installed. The
-    # desktop app can act as node (ELECTRON_RUN_AS_NODE=1), and that is the
-    # path this build is built for. The comments that documented the CLI
-    # path go with it.
-    @{ from = "#   - CLI 安装自带 node（~/.minimax-code/runtime/node-<ver>/node.exe）；`n"
-       to   = '' }
-    @{ from = "#   2. CLI 自带的 node        —— ~/.minimax-code/runtime/node-*/node.exe`n"
-       to   = '' }
-    @{ from = "#   3. 桌面端 app 当 node 用  —— ELECTRON_RUN_AS_NODE=1"
-       to   = "#   2. 桌面端 app 当 node 用  —— ELECTRON_RUN_AS_NODE=1" }
-    # The package must not name the credential module, not even in a
-    # comment: the audit looks for the string, and a package that talks
-    # about a credential module reads like a package that needs one.
-    @{ from = '# 这个能力上线之前的样子。和 scripts/lib/Get-5hUsage.ps1 同一个套路 ——'
-       to   = '' }
-    @{ from = @'
-    # CLI 自带：~/.minimax-code/runtime/node-vXX.Y.Z-win-x64/node.exe
-    $userHome = Get-UserHome
-    if ($userHome) {
-      $runtimeRoot = Join-Path $userHome '.minimax-code\runtime'
-      if (Test-Path -LiteralPath $runtimeRoot) {
-        $nodeExe = Get-ChildItem -LiteralPath $runtimeRoot -Recurse -Depth 2 -File -Filter 'node.exe' -ErrorAction SilentlyContinue |
-          Sort-Object LastWriteTime -Descending | Select-Object -First 1
-        if ($nodeExe) { return @{ Exe = $nodeExe.FullName; Env = $null } }
-      }
-    }
-'@
-       to   = @'
-    # The CLI's own node is not a path the Marketplace package may know
-    # about: the package must not depend on the MiniMax Code CLI being
-    # installed. The desktop app can act as node (ELECTRON_RUN_AS_NODE=1),
-    # and that is the path this build is built for.
-'@ }
-  )
-  'scripts/lib/Session-Tracker.ps1' = @(
-    @{ from = '# 样子。跟 scripts/lib/Get-5hUsage.ps1 同一个套路：可选能力，可有可无。'
-       to   = '' }
   )
   'mcode-status-detect.ps1' = @(
     @{ from = @'
@@ -360,6 +319,8 @@ $forbiddenPatterns = [ordered]@{
   'io.minimax.mcode'   = 'the Hook client extension'
   'hooks.json'         = 'a Hook declaration'
   '"hooks"'            = 'a Hook declaration'
+  'ELECTRON_RUN_AS_NODE' = 'borrowing the MiniMax Code program to run a script'
+  'runtime-state.sqlite' = 'the runtime''s own database'
 }
 
 # --- blocks that exist upstream but must not ship -----------------------------

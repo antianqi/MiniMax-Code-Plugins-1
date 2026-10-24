@@ -4,7 +4,7 @@ description: Use this skill to publish the agent's live progress onto a Windows 
 license: Apache-2.0
 metadata:
   author: antianqi
-  version: 0.9.0
+  version: 0.10.0
 ---
 
 # mcode 灵动岛状态条
@@ -131,8 +131,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<plugin-root>\autostart.ps1
 开着的时候,用 `mcode-island pin` 把点击目标钉回自己的终端,`mcode-island unpin` 解除。
 
 **会话列表**:鼠标停在 pill 上会展开当前所有活着的会话(状态点、会话名、最后一条
-消息、多久没动)。点一行就回到那个会话 —— 先切 Windows Terminal 标签页,会话住在
-桌面端 app 里的话就把 app 切到那个对话;不会给已经在别处开着的会话再开一个终端。
+消息、多久没动)。读的是运行时本来就在写的会话日志:首条用户消息(标题)、最后一条
+消息(预览和状态)、日志修改时间(多久没动);不读运行时自己的数据库,也不借用
+MiniMax Code 的程序跑任何东西。标题和预览在写盘和显示之前都会截断并脱敏。30 分钟
+没动的会话会从列表和 `sessions.json` 里清掉。
+
+点一行就回到那个会话 —— 先切 Windows Terminal 标签页,会话住在桌面端 app 里的话
+就把 app 切到那个对话(查找限定在 app 侧边栏的会话列表里,不是整扇窗口);不会给
+已经在别处开着的会话再开一个终端。
 
 ## 7. 运行时数据
 

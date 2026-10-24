@@ -674,10 +674,9 @@ function Invoke-SessionClick([string]$id) {
   Start-SessionTerminal $id
 }
 
-# app
-# app " false"
-function Get-AppConversationButton([IntPtr]$hwnd, [string]$name) {
-  if (-not $name) { return $null }
+# app ** **
+function Get-AppConversationList([IntPtr]$hwnd, [string[]]$knownTitles) {
+  if (-not $knownTitles -or $knownTitles.Count -eq 0) { return $null }
   try {
     if (-not $script:uiaReady) {
       Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
@@ -686,15 +685,71 @@ function Get-AppConversationButton([IntPtr]$hwnd, [string]$name) {
     }
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
     if (-not $root) { return $null }
- # 2000 500ms
- # UI 47ms
+
+    $candidates = New-Object System.Collections.Generic.List[object]
+    foreach ($n in $knownTitles) {
+      $nn = ([string]$n).Trim()
+      if (-not $nn) { continue }
+      $cond = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::NameProperty, $nn)
+      $hits = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
+      for ($i = 0; $i -lt $hits.Count; $i++) { $candidates.Add($hits.Item($i)) }
+    }
+    if ($candidates.Count -lt 2) {
+      Dbg ("app conversation list: only " + $candidates.Count + " candidate(s) for " + $knownTitles.Count + " known title(s)")
+      return $null
+    }
+
+    $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+    $best = $null
+    $bestDepth = 99
+    foreach ($c in $candidates) {
+      $node = $c
+      $depth = 0
+      while ($node -ne $null -and $depth -lt 12) {
+        $inside = 0
+        try {
+          $sub = $node.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                  [System.Windows.Automation.Condition]::TrueCondition)
+          foreach ($e in $sub) {
+            try {
+              $nm = $e.Current.Name
+              if ($knownTitles -contains $nm) { $inside++ }
+            } catch {}
+          }
+        } catch { $inside = 0 }
+        if ($inside -ge 2 -and $depth -lt $bestDepth) { $best = $node; $bestDepth = $depth }
+        try { $node = $walker.GetParent($node) } catch { break }
+        $depth++
+      }
+    }
+    Dbg ("app conversation list: " + $candidates.Count + " candidate(s), container depth=" + $bestDepth)
+    return $best
+  } catch {
+    Dbg ("APP CONVERSATION LIST FAIL: " + $_.Exception.Message)
+    return $null
+  }
+}
+
+# Get-AppConversationList
+# null
+function Get-AppConversationButton([IntPtr]$hwnd, [string]$name, [string[]]$knownTitles) {
+  if (-not $name) { return $null }
+  try {
+    if (-not $script:uiaReady) {
+      Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
+      Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop
+      $script:uiaReady = $true
+    }
+    $list = Get-AppConversationList $hwnd $knownTitles
+    if (-not $list) { Dbg 'app conversation list not found'; return $null }
     $cond = New-Object System.Windows.Automation.AndCondition(
       (New-Object System.Windows.Automation.PropertyCondition(
         [System.Windows.Automation.AutomationElement]::NameProperty, $name)),
       (New-Object System.Windows.Automation.PropertyCondition(
         [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
         [System.Windows.Automation.ControlType]::Button)))
-    $hits = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
+    $hits = $list.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
     for ($i = 0; $i -lt $hits.Count; $i++) {
       try {
         $el = $hits.Item($i)
@@ -721,6 +776,15 @@ function Switch-ToAppConversation([string[]]$names) {
   if (-not $names -or $names.Count -eq 0) { return $false }
   $app = Find-DesktopAppWindow
   if (-not $app) { return $false }
+  $known = @()
+  try {
+    foreach ($s in @(Read-SessionsFile)) {
+      if ($s.title) { $known += [string]$s.title }
+      foreach ($x in @($s.titles)) { if ($x) { $known += [string]$x } }
+    }
+  } catch {}
+  $known = @($known | Select-Object -Unique)
+  if ($known.Count -lt 2) { return $false }
  # UIA 47ms
   $tried = 0
   foreach ($n in $names) {
@@ -728,7 +792,7 @@ function Switch-ToAppConversation([string[]]$names) {
     $nn = ([string]$n).Trim()
     if (-not $nn) { continue }
     $tried++
-    $el = Get-AppConversationButton ([IntPtr]$app.Hwnd) $nn
+    $el = Get-AppConversationButton ([IntPtr]$app.Hwnd) $nn $known
     if (-not $el) { continue }
     try {
       $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
