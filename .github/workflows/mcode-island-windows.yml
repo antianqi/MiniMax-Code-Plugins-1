@@ -464,3 +464,24 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "test-substep-progress.mjs failed with exit code $LASTEXITCODE"
           }
+
+      # The session list (v0.5.0) brought a 500-line suite of its own, and
+      # it was in no workflow: the feature's core tests only ran when
+      # somebody remembered to run them by hand. A suite that is not wired
+      # into CI is a suite that rots.
+      - name: Session tracker suite
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $OutputEncoding = [System.Text.Encoding]::UTF8
+          try { chcp 65001 | Out-Null } catch {}
+
+          $suite = 'plugins/antianqi/mcode-island/scripts/test-session-tracker.ps1'
+          if (-not (Test-Path $suite)) {
+            throw "$suite not found (cwd: $((Get-Location).Path))"
+          }
+          Write-Host "Suite: $((Resolve-Path $suite).Path)"
+
+          & $suite
+          if ($LASTEXITCODE -ne 0) {
+            throw "test-session-tracker.ps1 failed with exit code $LASTEXITCODE"
+          }

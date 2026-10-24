@@ -15,7 +15,7 @@ import { readFileSync, existsSync, mkdtempSync, writeFileSync, rmSync, mkdirSync
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = dirname(HERE);
@@ -69,7 +69,7 @@ const PS_BIN = resolvePs();
 // cannot leave fixtures behind for the next one to read.
 const TMP = mkdtempSync(join(tmpdir(), 'island-substep-'));
 
-function runPs(script, extraEnv) {
+function runPs(script, extraEnv, allowFail) {
     const file = join(TMP, `run-${Math.random().toString(36).slice(2)}.ps1`);
     // Force UTF-8 on both ends of the pipe. The console code page here is 936
     // (GBK), so a middle dot in a script literal comes back as the two bytes
@@ -80,17 +80,29 @@ function runPs(script, extraEnv) {
     // it PowerShell 5.1 reads the .ps1 as ANSI and mangles the literal.
     const preamble = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n';
     writeFileSync(file, '\uFEFF' + preamble + script, 'utf8');
-    const out = execFileSync(PS_BIN, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', file],
-        {
-            encoding: 'buffer',
-            stdio: ['ignore', 'pipe', 'pipe'],
-            env: extraEnv ? { ...process.env, ...extraEnv } : process.env,
-        });
-    let buf = out;
+    const r = spawnSync(PS_BIN, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', file], {
+        encoding: 'buffer',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: extraEnv ? { ...process.env, ...extraEnv } : process.env,
+    });
+    // The child's stderr is kept: a harness that dies before its first
+    // check otherwise reports "0 passed", which reads like "there was
+    // nothing to test" rather than "the harness is broken".
+    const errText = (r.stderr || Buffer.alloc(0)).toString('utf8');
+    if (r.status !== 0 && !allowFail) {
+        throw new Error(`PS harness failed (exit ${r.status}): ${errText || (r.stdout || '').toString('utf8')}`);
+    }
+    let buf = r.stdout || Buffer.alloc(0);
     if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
         buf = buf.subarray(3);
     }
-    return buf.toString('utf8');
+    let text = buf.toString('utf8');
+    if (errText) {
+        // Tagged so the TAP parser ignores it, but it is still in the
+        // output the caller reads.
+        text += `\n# stderr: ${errText.replace(/\r?\n/g, ' | ')}`;
+    }
+    return text;
 }
 
 /**
@@ -1267,6 +1279,254 @@ Write-Output ("ORIGIN=" + $t.Origin + " MODE=" + $t.Mode)
             eq('the Marketplace package resolves the click to the app window', pkg.origin, 'desktop-app');
             eq('the Marketplace package focuses instead of hiding', pkg.mode, 'focus');
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 10. The multi-session tracker (v0.5.0)
+// ---------------------------------------------------------------------------
+//
+// The tracker is a separate PowerShell harness: it assembles the scope
+// the tracker lib expects (the detector's constants, Get-LastJsonLine,
+// Test-IsAskUser, the store lock) against a FIXTURE session tree, and
+// asserts the state machine, the entry rule, the title extraction, the
+// persistence and the dismissal. It emits TAP-ish lines.
+//
+// It runs in its own process because the tracker lib keeps state in
+// $script: variables, and dot-sourcing it into this process would mix
+// the fixture's state with the detector's.
+if (PS_BIN) {
+    const trackerSuite = join(PLUGIN_ROOT, 'scripts', 'test-session-tracker.ps1');
+    check('the session tracker suite exists', existsSync(trackerSuite), `${trackerSuite} not found`);
+
+    if (existsSync(trackerSuite)) {
+        const out = runPs(`& '${trackerSuite.replace(/'/g, "''")}'`, undefined, true);
+        const lines = out.split(/\r?\n/);
+        let okCount = 0;
+        let badCount = 0;
+        const bad = [];
+        for (const l of lines) {
+            if (/^ok \d+ - /.test(l)) { okCount++; }
+            else if (/^not ok \d+ - /.test(l)) { badCount++; bad.push(l.replace(/^not ok \d+ - /, '')); }
+        }
+        check('the session tracker suite passes', badCount === 0 && okCount > 0,
+            `${okCount} passed, ${badCount} failed: ${bad.join(' | ')}`);
+        for (const b of bad) {
+            console.log(`    FAIL ${b}`);
+        }
+        // The count is pinned so a silently empty harness cannot pass.
+        check('the session tracker suite ran its full set of checks', okCount >= 20,
+            `only ${okCount} checks ran`);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 11. The 5h usage survives a tick (the blank-badge regression)
+// ---------------------------------------------------------------------------
+//
+// Symptom: the pill's 5h badge was blank almost all the time, while the
+// detector's own log said "5h usage refreshed: remaining=94%". The
+// number WAS arriving -- and was being dropped again on the very next
+// write.
+//
+// Mechanism, confirmed against the live status.json with a 25ms
+// watcher: the detector's step 4 calls Get-PlanUsage on every tick, and
+// that lib used to clear $script:plan5hRemainingPct /
+// $script:plan5hResetMs on the way in. The only thing that refills them
+// is Refresh-5hUsage, whose 60s TTL gate returns early WITHOUT
+// touching them. So the value survived exactly two writes -- the
+// refresh itself and the state inference right after it -- and was
+// $null for the remaining ~58 seconds of every minute.
+//
+// The contract pinned here: a value that has been fetched must still be
+// on the next write, even though no runtime usage file exists and the
+// credentialed refill is TTL-blocked.
+//
+// 11a is the unit half: the lib must not wipe a value it has no
+// replacement for. 11b is the end-to-end half: two detector ticks
+// against a real status.json, the second write still carrying it.
+//
+// 11b needs TWO ticks on purpose. The regression was invisible on the
+// first tick -- the refresh wrote the number, and the write right
+// after it still had it. The number only went missing on the tick
+// AFTER the one that cleared the cache, so a single-tick test would
+// have passed against the broken code.
+if (PS_BIN) {
+    const planUsageLibRef = join(PLUGIN_ROOT, 'scripts', 'lib', 'Plan-Usage.ps1');
+    const get5hLibRef = join(PLUGIN_ROOT, 'scripts', 'lib', 'Get-5hUsage.ps1');
+    const detectorSrc = readFileSync(join(PLUGIN_ROOT, 'mcode-status-detect.ps1'), 'utf8');
+
+    // The environment the usage lib resolves its candidates from.
+    // APPDATA and USERPROFILE are both set because the lib builds that
+    // candidate list with Join-Path at load time, and Join-Path throws
+    // on an empty path -- which is exactly what a Linux CI runner
+    // hands it. MCODE_PLAN_USAGE_FILE is pointed at a path that does
+    // not exist, so the "there is no runtime usage file" precondition
+    // cannot be broken by whatever the developer's own machine has.
+    const usageEnv = (appdata) => ({
+        APPDATA: appdata,
+        USERPROFILE: appdata,
+        MCODE_PLAN_USAGE_FILE: join(appdata, 'no-such-usage.json'),
+    });
+
+    // --- 11a: the lib must not clear a value it cannot replace ------
+    {
+        const appdata = makeIsolatedAppData('plan-usage');
+        const out = runPs(`
+$ErrorActionPreference = 'Stop'
+. '${planUsageLibRef}'
+$script:plan5hRemainingPct = 94
+$script:plan5hResetMs = 15496790
+$ret = Get-PlanUsage
+"PCT=$($script:plan5hRemainingPct)"
+"MS=$($script:plan5hResetMs)"
+"FROMRUNTIME=$($script:plan5hFromRuntime)"
+"RET=$ret"
+`, usageEnv(appdata));
+
+        check('the usage lib found no runtime file',
+            /FROMRUNTIME=False/.test(out) && /RET=False/.test(out),
+            `expected FROMRUNTIME=False and RET=False, got ${JSON.stringify(out.trim())}`);
+        check('the usage lib did not wipe the cached percentage',
+            /PCT=94(\s|$)/m.test(out),
+            `the cached percentage was cleared: ${JSON.stringify(out.trim())}`);
+        check('the usage lib did not wipe the cached reset countdown',
+            /MS=15496790(\s|$)/m.test(out),
+            `the cached reset countdown was cleared: ${JSON.stringify(out.trim())}`);
+    }
+
+    // --- 11b: two detector ticks, the number still there -----------
+    {
+        const appdata = makeIsolatedAppData('usage-survives');
+        const statusPath = join(appdata, 'mcode-island', 'status.json');
+
+        // The detector's step 4, in the order the real loop runs it.
+        const step4 = `
+$prevPct  = $script:plan5hRemainingPct
+$prevMs   = $script:plan5hResetMs
+Get-PlanUsage | Out-Null
+if (-not $script:plan5hFromRuntime -and $script:plan5hAvailable) { Refresh-5hUsage }
+$curPct   = $script:plan5hRemainingPct
+$curMs    = $script:plan5hResetMs
+`;
+
+        const harness = `
+$ErrorActionPreference = 'Stop'
+. '${storeLibRef}'
+. '${planUsageLibRef}'
+. '${get5hLibRef}'
+$S_IDLE = 'idle'
+$S_DETECTOR = 'detector'
+$script:plan5hTodoData = $null
+$script:plan5hAvailable = $true
+# What the credentialed fetch produced a moment ago.
+$script:plan5hRemainingPct = 94
+$script:plan5hResetMs = 15496790
+# ... and the TTL gate that keeps the next refill from happening.
+$script:plan5hLastCallAt = Get-Date
+${extractFn(detectorSrc, 'Write-Status')}
+${extractFn(detectorSrc, 'Write-StatusUnderLock')}
+# tick 1: the state inference writes, then step 4 refreshes.
+Write-Status 'working' 'Reading' 'read'
+${step4}
+# tick 2: the state inference writes again. The number must still be
+# there -- step 4 found no runtime file and the credentialed refill was
+# TTL-blocked, so nothing replaced it, and nothing may have wiped it.
+Write-Status 'done' 'Read' 'read'
+'DONE'
+`;
+        const out = runPs(harness, usageEnv(appdata));
+        check('the two-tick harness ran to completion',
+            /DONE/.test(out) && !/Exception/i.test(out),
+            `harness did not complete: ${JSON.stringify(out.trim())}`);
+
+        const final = readJsonFile(statusPath);
+        eq('the 5h usage survived the tick that had no runtime file', final.usage5h, 94);
+        eq('the 5h reset countdown survived too', final.usage5hResetMs, 15496790);
+        // Both writes have to have happened. Otherwise "the number is
+        // still 94" could just be the FIRST write's payload, with the
+        // second write never landing at all.
+        eq('both ticks wrote', final.version, 2);
+        eq('the second write carried the state', final.state, 'done');
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 11. A session row switches the desktop app to that conversation
+// ---------------------------------------------------------------------------
+//
+// The session list is only worth having if a click actually takes you
+// somewhere. On the desktop app the session lives in the app's sidebar, and
+// the sidebar row is a Button whose accessibility name is the conversation
+// title -- so the row can be invoked.
+//
+// The UIA lookup is behind Get-AppConversationButton precisely so this can be
+// tested without the app running: the test swaps the lookup and the app
+// lookup, and checks the contract (found -> invoke, not found -> fall back,
+// no app -> fall back).
+{
+    const sourcePath = join(PLUGIN_ROOT, 'mcode-island.ps1');
+    const src = readFileSync(sourcePath, 'utf8');
+
+    let switchFn;
+    try {
+        switchFn = extractFn(src, 'Switch-ToAppConversation');
+    } catch (e) {
+        bad('Switch-ToAppConversation is extractable', e.message);
+    }
+
+    if (switchFn) {
+        ok('Switch-ToAppConversation is extractable');
+
+        const script = `
+$ErrorActionPreference = 'Stop'
+# The extracted function references the UIA pattern type by name, so the
+# assemblies have to be loadable even though the lookup itself is stubbed.
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$script:uiaReady = $true
+$global:invoked = $false
+$global:pattern = [PSCustomObject]@{}
+$global:pattern | Add-Member -MemberType ScriptMethod -Name Invoke -Value { $global:invoked = $true }
+# The extracted function logs; the harness has no logger.
+function Dbg([string]$m) { }
+
+# The app is running and its sidebar has a row named 'target-session'.
+function Find-DesktopAppWindow { return [PSCustomObject]@{ Hwnd = [IntPtr]1234; Pid = 42; Exe = 'fake-app' } }
+function Get-AppConversationButton([IntPtr]$h, [string]$n) {
+    if ($n -eq 'target-session') {
+        $el = [PSCustomObject]@{}
+        $el | Add-Member -MemberType ScriptMethod -Name GetCurrentPattern -Value { param($p) return $global:pattern }
+        return $el
+    }
+    return $null
+}
+${switchFn}
+
+$r1 = Switch-ToAppConversation @('target-session')
+Write-Output ("HIT=" + [string]$r1 + " INVOKED=" + [string]$global:invoked)
+
+$r2 = Switch-ToAppConversation @('another-session')
+Write-Output ("MISS=" + [string]$r2)
+
+function Find-DesktopAppWindow { return $null }
+$r3 = Switch-ToAppConversation @('target-session')
+Write-Output ("NOAPP=" + [string]$r3)
+`;
+
+        let out = '';
+        try {
+            out = runPs(script);
+        } catch (e) {
+            bad('the app conversation switch honours the contract',
+                `the extracted function threw: ${(e.stdout || e.message || '').toString().slice(0, 300)}`);
+        }
+
+        const hit = (out.match(/HIT=(\S*) INVOKED=(\S*)/) || []);
+        eq('a matching sidebar row switches the conversation', hit[1], 'True');
+        eq('the matching row is actually invoked', hit[2], 'True');
+        eq('a session that is not in the sidebar falls through', (out.match(/MISS=(\S*)/) || [])[1], 'False');
+        eq('no app running falls through', (out.match(/NOAPP=(\S*)/) || [])[1], 'False');
     }
 }
 
