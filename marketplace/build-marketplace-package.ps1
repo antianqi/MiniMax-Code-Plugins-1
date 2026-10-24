@@ -83,6 +83,8 @@ $runtimeFiles = @(
   'scripts/lib/Protect-Text.ps1'
   'scripts/lib/Status-Store.ps1'
   'scripts/lib/Plan-Usage.ps1'
+  'scripts/lib/Session-Tracker.ps1'
+  'scripts/lib/Runtime-Titles.ps1'
 )
 
 $copyBinaryFiles = @(
@@ -151,6 +153,53 @@ $englishReplacements = [ordered]@{
        to   = "icon='x'" }
     @{ from = '"$stepStr · $Detail"'
        to   = '"$stepStr - $Detail"' }
+  )
+  'scripts/lib/Plan-Usage.ps1' = @(
+    # The package must not name the credential module, not even in a
+    # comment: the audit looks for the string, and a package that talks
+    # about a credential module reads like a package that needs one.
+    @{ from = '# (Refresh-5hUsage, in Get-5hUsage.ps1) is TTL-gated: it refills the'
+       to   = '# The refresh is TTL-gated: it refills the' }
+  )
+  'scripts/lib/Runtime-Titles.ps1' = @(
+    # The CLI's own node is a path this build may not know about: the
+    # package must not depend on the MiniMax Code CLI being installed. The
+    # desktop app can act as node (ELECTRON_RUN_AS_NODE=1), and that is the
+    # path this build is built for. The comments that documented the CLI
+    # path go with it.
+    @{ from = "#   - CLI 安装自带 node（~/.minimax-code/runtime/node-<ver>/node.exe）；`n"
+       to   = '' }
+    @{ from = "#   2. CLI 自带的 node        —— ~/.minimax-code/runtime/node-*/node.exe`n"
+       to   = '' }
+    @{ from = "#   3. 桌面端 app 当 node 用  —— ELECTRON_RUN_AS_NODE=1"
+       to   = "#   2. 桌面端 app 当 node 用  —— ELECTRON_RUN_AS_NODE=1" }
+    # The package must not name the credential module, not even in a
+    # comment: the audit looks for the string, and a package that talks
+    # about a credential module reads like a package that needs one.
+    @{ from = '# 这个能力上线之前的样子。和 scripts/lib/Get-5hUsage.ps1 同一个套路 ——'
+       to   = '' }
+    @{ from = @'
+    # CLI 自带：~/.minimax-code/runtime/node-vXX.Y.Z-win-x64/node.exe
+    $userHome = Get-UserHome
+    if ($userHome) {
+      $runtimeRoot = Join-Path $userHome '.minimax-code\runtime'
+      if (Test-Path -LiteralPath $runtimeRoot) {
+        $nodeExe = Get-ChildItem -LiteralPath $runtimeRoot -Recurse -Depth 2 -File -Filter 'node.exe' -ErrorAction SilentlyContinue |
+          Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($nodeExe) { return @{ Exe = $nodeExe.FullName; Env = $null } }
+      }
+    }
+'@
+       to   = @'
+    # The CLI's own node is not a path the Marketplace package may know
+    # about: the package must not depend on the MiniMax Code CLI being
+    # installed. The desktop app can act as node (ELECTRON_RUN_AS_NODE=1),
+    # and that is the path this build is built for.
+'@ }
+  )
+  'scripts/lib/Session-Tracker.ps1' = @(
+    @{ from = '# 样子。跟 scripts/lib/Get-5hUsage.ps1 同一个套路：可选能力，可有可无。'
+       to   = '' }
   )
   'mcode-status-detect.ps1' = @(
     @{ from = @'
@@ -277,6 +326,21 @@ $byteLiteralTranslations = @{
   '已静默 {0}s'                   = 'Idle {0}s'
   'agent 刚回复，等用户'           = 'agent replied, waiting for you'
   'session 压缩'                  = 'session compacted'
+  # The session list (v0.5.0) brings its own vocabulary. The pill's own
+  # labels are replaced as whole strings further down, so these bare words
+  # only ever hit the session list's own table.
+  '等待审批'                      = 'Waiting for approval'
+  '分钟前'                        = 'min ago'
+  '刚刚'                          = 'just now'
+  '运行中'                        = 'Running'
+  '思考中'                        = 'Thinking'
+  '待回复'                        = 'Awaiting reply'
+  '已完成'                        = 'Done'
+  '已停止'                        = 'Stopped'
+  '出错'                          = 'Error'
+  '执行 '                         = 'Running '
+  '…'                             = '...'
+  ' · '                           = ' - '
 }
 
 # --- a package must never contain these --------------------------------------
@@ -864,12 +928,38 @@ if (-not $Check) {
     foreach ($byte in $b) { if ($byte -gt 127) { $bad++ } }
     if ($bad -gt 0) { $problems.Add("${rel}: $bad non-ASCII byte(s)") }
   }
+
+  # Every lib a shipped file dot-sources has to be in the package.
+  #
+  # A file that dot-sources a lib the package does not contain dies at
+  # STARTUP -- and nothing above would notice: the parse check, the ASCII
+  # check and the guard check all look at the files that ARE there, not at
+  # the files they reach for. The session list brought two new libs with it
+  # (Session-Tracker.ps1, Runtime-Titles.ps1) and they were not in the
+  # whitelist, so the build passed and the shipped detector would have
+  # killed the state detection for every Marketplace user.
+  $libRef = [regex]'(?m)["'']?\$?PSScriptRoot[/\\]scripts[/\\]lib[/\\]([A-Za-z0-9_\-]+\.ps1)'
+  $missing = New-Object System.Collections.Generic.List[string]
+  foreach ($rel in $runtimeFiles) {
+    $p = Join-Path $out $rel
+    if (-not (Test-Path $p)) { continue }
+    $t = [System.IO.File]::ReadAllText($p)
+    foreach ($m in $libRef.Matches($t)) {
+      $lib = ('scripts/lib/' + $m.Groups[1].Value)
+      if (-not (Test-Path (Join-Path $out $lib))) {
+        $missing.Add("${rel} dot-sources $lib, which is not in the package")
+      }
+    }
+  }
+  foreach ($m in $missing) { $problems.Add($m) }
+
   if ($problems.Count -gt 0) {
     $problems | ForEach-Object { Write-Host "  FAIL $_" -ForegroundColor Red }
     throw 'package verification failed'
   }
   Write-Host "OK  built $written file(s) into $OutDir" -ForegroundColor Green
   Write-Host "OK  every .ps1 parses, is ASCII-only, has no BOM and carries the Windows guard" -ForegroundColor Green
+  Write-Host "OK  every lib a shipped file dot-sources is in the package" -ForegroundColor Green
   Write-Host "OK  no credential, no API endpoint, no Hook material in the package" -ForegroundColor Green
 } else {
   if ($drift.Count -gt 0) {

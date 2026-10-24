@@ -158,6 +158,13 @@ $cfgFile    = Join-Path $configDir 'config.json'
 # the lock, the single snapshot read and the atomic replace, so both
 # sides follow one protocol.
 . "$PSScriptRoot/scripts/lib/Status-Store.ps1"
+# session v0.5.0
+# pill session Get-LatestSessionFile
+# " " pill lib
+# session / /
+# sessions.json status.json agent
+# $script: dot-source lib
+. "$PSScriptRoot/scripts/lib/Session-Tracker.ps1"
 $script:plan5hLastCallAt = [DateTime]::MinValue
 $script:plan5hRemainingPct = $null # 0..100
 $script:plan5hResetMs = $null
@@ -807,6 +814,18 @@ if (-not $Once) {
   Log-Line "detector started (PID $PID) mcodeRoot=$mcodeRoot"
 }
 
+# session
+# detector per-tick guard autostart
+# sessions.json
+# 30 session
+try {
+  Restore-SessionTracker
+  Seed-SessionTracker
+  Write-SessionsFile -Force
+} catch {
+  Log-Line "SESSIONS INIT FAIL: $($_.Exception.Message)"
+}
+
 try {
   while ($true) {
  # --- per-tick guard -------------------------------------------------------
@@ -822,6 +841,15 @@ try {
     $now = Get-Date
     $inferred = $null
     $latestFile = $null
+
+ # 0) session +
+ # " session " "
+    try {
+      Update-SessionTracker
+      Write-SessionsFile
+    } catch {
+      Log-Line "SESSIONS UPDATE FAIL: $($_.Exception.Message)"
+    }
 
  # 1) session log 5s EnumerateFiles .jsonl
  # mcode CLI

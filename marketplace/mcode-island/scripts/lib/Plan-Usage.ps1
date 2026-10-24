@@ -19,9 +19,26 @@
 # runtime writes to its own data directory instead. MCODE_PLAN_USAGE_FILE
 # overrides everything.
 # # Behaviour
-# Sets $script:plan5hRemainingPct (0..100, or $null when unknown) and
-# $script:plan5hResetMs (milliseconds until the window resets, relative).
-# Returns $true when a usable file was read.
+# Sets $script:plan5hRemainingPct (0..100) and $script:plan5hResetMs
+# (milliseconds until the window resets, relative) when a usable file was
+# read. Returns $true when a usable file was read.
+# It does NOT clear those values when it finds nothing.
+# This function is a SOURCE. The caller owns the cached value, and the
+# detector calls this on every tick. The credentialed fallback
+# The refresh is TTL-gated: it refills the
+# values once a minute and returns early otherwise.
+# When this lib cleared the values on the way in, the number survived
+# exactly two writes -- the refresh itself and the state inference right
+# after it -- and was $null for the remaining ~58 seconds of every
+# minute. The pill showed a blank 5h badge almost all the time while
+# the detector's own log said "5h usage refreshed: remaining=94%",
+# which is why it looked like the data arrived and was then lost
+# somewhere else.
+# A source with nothing to offer has to leave the current value alone.
+# That is what the credentialed path already does when its TTL gate
+# blocks a refill, so the two paths now behave the same way.
+# $script:plan5hFromRuntime still flips to $false when no usable file
+# was read, so the caller knows to fall back to the credentialed path.
 
 
 # mcode-island runs on Windows only: the status pill is a WPF window and the
@@ -39,8 +56,11 @@ $script:planUsageCandidates = @(
 )
 
 function Get-PlanUsage {
-  $script:plan5hRemainingPct = $null
-  $script:plan5hResetMs = $null
+ # The cached percentage and reset countdown are deliberately left
+ # alone here. Only `plan5hFromRuntime` is reset, because it is this
+ # function's own answer to "did a usable file turn up?", and the
+ # caller needs that answer to decide whether to fall back to the
+ # credentialed path.
   $script:plan5hFromRuntime = $false
 
   foreach ($candidate in $script:planUsageCandidates) {

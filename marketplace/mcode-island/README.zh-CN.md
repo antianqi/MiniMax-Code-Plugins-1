@@ -90,6 +90,19 @@ agent 不推的时候 pill 也能继续动。它只读本机文件。
 `caller.json` 每次状态流转都会被覆写,pin 放进去活不过下一次推送。桌面端和 CLI 同时
 开着的时候,用它把点击目标钉回自己的终端。`mcode-island unpin` 解除锁定。
 
+## 会话列表
+
+鼠标停在 pill 上,会展开**当前所有活着的会话**,不只是探测器正在跟的那一个。每行带着
+状态点(和 pill 用同一套词和颜色)、会话名、这个会话最后说的话,以及它多久没动了。
+
+**点一行就回到那个会话。** 先找正在跑它的 Windows Terminal 标签页并切过去;如果这个
+会话住在桌面端 app 里,widget 会把 app 切到那个对话 —— app 侧边栏那一行是个按钮,
+无障碍名就是会话名,所以 widget 用 UI Automation 点它。点一行**绝不会**给一个已经
+在别处开着的会话再开一个终端。
+
+会话名来自运行时自己的存储。读不到的时候,这一行退回"用户在该会话里说的第一句话",
+所以不会出现空行。
+
 ## 开机自启
 
 `mcode-island autostart-on` 会在 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下写两个具名值

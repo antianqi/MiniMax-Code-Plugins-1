@@ -4,7 +4,7 @@ description: Use this skill to publish the agent's live progress onto a Windows 
 license: Apache-2.0
 metadata:
   author: antianqi
-  version: 0.8.2
+  version: 0.9.0
 ---
 
 # mcode 灵动岛状态条
@@ -129,6 +129,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<plugin-root>\autostart.ps1
 桌面端里 agent 由应用托管,跑在应用开的终端里,藏掉那个终端并不会让 agent 停下来,
 用户只会盯着一条不再变化的 pill;所以桌面端优先聚焦应用主窗口。桌面端和 CLI 同时
 开着的时候,用 `mcode-island pin` 把点击目标钉回自己的终端,`mcode-island unpin` 解除。
+
+**会话列表**:鼠标停在 pill 上会展开当前所有活着的会话(状态点、会话名、最后一条
+消息、多久没动)。点一行就回到那个会话 —— 先切 Windows Terminal 标签页,会话住在
+桌面端 app 里的话就把 app 切到那个对话;不会给已经在别处开着的会话再开一个终端。
 
 ## 7. 运行时数据
 

@@ -231,6 +231,28 @@ if (-not (Test-Path $widgetPath)) {
     }
 }
 
+# --- 6f. every lib a shipped file dot-sources must be in the package ---------
+# A file that dot-sources a lib the package does not contain dies at STARTUP,
+# and nothing else in this audit would notice: the parse check, the ASCII
+# check and the Windows-guard check all look at the files that ARE there, not
+# at the files they reach for. The session list brought two new libs with it
+# (Session-Tracker.ps1, Runtime-Titles.ps1) and they were not in the
+# builder's whitelist, so the build passed and the shipped detector would
+# have killed the state detection for every Marketplace user.
+$libRef = [regex]'(?m)["'']?\$?PSScriptRoot[/\\]scripts[/\\]lib[/\\]([A-Za-z0-9_\-]+\.ps1)'
+$missingLibs = @()
+foreach ($f in $allFiles) {
+    if ($f.Extension -ne '.ps1') { continue }
+    $t = [System.IO.File]::ReadAllText($f.FullName)
+    foreach ($m in $libRef.Matches($t)) {
+        $lib = 'scripts/lib/' + $m.Groups[1].Value
+        if (-not (Test-Path (Join-Path $pkg $lib))) {
+            $missingLibs += ($f.Name + ' -> ' + $lib)
+        }
+    }
+}
+Check ($missingLibs.Count -eq 0) 'every lib a shipped file dot-sources is in the package' ($missingLibs -join '; ')
+
 # --- 7. no secrets ------------------------------------------------------------
 $secretHits = @()
 foreach ($f in $allFiles) {

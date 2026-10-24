@@ -88,7 +88,7 @@ The form has 11 questions. For `mcode-island` at v0.8.1 they are:
 | 2  | Operation type                     | 更新插件 / Update the plugin.                                                  |
 | 3  | Source type                        | GitHub                                                                         |
 | 4  | GitHub repository URL              | `https://github.com/antianqi/MiniMax-Code-Plugins-1`                          |
-| 5  | GitHub ref                         | `marketplace-v0.8.2` (the tag that holds the package)                          |
+| 5  | GitHub ref                         | `marketplace-v0.9.0` (the tag that holds the package)                          |
 | 6  | GitHub subdirectory                | `marketplace/mcode-island`                                                     |
 | 7  | Target region                      | CN                                                                             |
 | 8  | Delivery target                    | 桌面端 / Desktop                                                               |
@@ -118,19 +118,24 @@ Required for an update of an already listed plugin. As of v0.8.1:
 
 1. 上架包所在公开仓库(仓库 owner 即本插件作者账号 antianqi):
    https://github.com/antianqi/MiniMax-Code-Plugins-1
-2. 本次提交对应的 tag 与子目录(tag: marketplace-v0.8.2):
-   https://github.com/antianqi/MiniMax-Code-Plugins-1/tree/marketplace-v0.8.2/marketplace/mcode-island
+2. 本次提交对应的 tag 与子目录(tag: marketplace-v0.9.0):
+   https://github.com/antianqi/MiniMax-Code-Plugins-1/tree/marketplace-v0.9.0/marketplace/mcode-island
 3. Marketplace 中已上架的 0.5.1 由同一账号 antianqi 提交,历史受理记录包括
    PLUGIN-202610210195、PLUGIN-202610220196、PLUGIN-202610220200。
 4. 插件源码与上架包在同一仓库维护:源码在 plugins/antianqi/mcode-island,
    上架包由 marketplace/build-marketplace-package.ps1 从该源码生成,
    并由 marketplace/audit-marketplace-package.ps1 自动审计(228 项检查,0 失败)。
 
-本次更新(v0.8.0 → v0.8.2)内容:
+本次更新(v0.8.0 → v0.9.0)内容:
 - v0.8.2 两条线正式分家:源码里只留一个开关 $script:clickPrefers,本仓库的
   CLI 版是 'terminal'(点一下隐藏终端、再点唤回),Marketplace 包由构建器把
   这一行翻成 'app'(点一下聚焦桌面应用主窗口)。翻不到这行,构建直接失败,
   不会把 CLI 的行为静默发给桌面端用户。pin 在两个形态里都是最高优先级。
+- v0.9.0 上架多会话列表:鼠标停在 pill 上会展开当前所有活着的会话(状态点、
+  会话名、最后一条消息、多久没动),点一行就回到那个会话 —— 先切 Windows
+  Terminal 标签页;会话住在桌面端 app 里的话,就把 app 切到那个对话(app
+  侧边栏那一行是无障碍名等于会话名的按钮,widget 用 UI Automation 点它)。
+  点一行不会给已经在别处开着的会话再开一个终端。
 - v0.8.0 点击行为适配桌面端:点 pill 聚焦桌面应用主窗口(MiniMax Inside Code /
   MiniMax Code / Mavis),不再隐藏终端;优先级为 手动 pin > 桌面端应用窗口 >
   来源终端窗口(保留原来的显隐切换)。手动 pin 从 caller.json 移到独立的

@@ -107,6 +107,25 @@ transition, so a pin stored there would not survive the next push. It is the
 way to point the click at your own terminal while the desktop app is open.
 `mcode-island unpin` clears it.
 
+## The session list
+
+Resting the mouse on the pill expands a list of **every session that is
+currently live**, not just the one the detector happens to be following. Each
+row carries the status dot (the same words and colours the pill uses), the
+session's real name, the last thing that session said, and how long ago it
+moved.
+
+**Clicking a row goes back to that session.** The widget first looks for the
+Windows Terminal tab that runs it and selects that tab. If the session lives
+in the desktop app instead, the widget switches the app to that conversation
+— the app's sidebar row is a button whose accessible name is the session
+name, so the widget invokes it through UI Automation. A row click never opens
+a second terminal for a session that is already open somewhere else.
+
+The session name comes from the runtime's own store. When that store cannot
+be read, the row falls back to the first thing the user said in that
+session, so a row is never blank.
+
 ## Autostart
 
 `mcode-island autostart-on` writes two named values under
