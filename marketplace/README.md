@@ -80,7 +80,7 @@ holds the package, and the subdirectory at `marketplace/<plugin-name>`. The guid
 
 ### The field values, field by field
 
-The form has 11 questions. For `mcode-island` at v0.8.1 they are:
+The form has 11 questions. For `mcode-island` at v0.9.0 they are:
 
 | #  | question                           | value                                                                          |
 | -- | ---------------------------------- | ------------------------------------------------------------------------------ |
@@ -108,7 +108,7 @@ Three things that cost a submission if they are wrong:
 
 ### The maintenance authorization evidence (question 9)
 
-Required for an update of an already listed plugin. As of v0.8.1:
+Required for an update of an already listed plugin. As of v0.9.0:
 
 ```
 该 Plugin 已上架于官方 Marketplace,现有版本 mcode-island 0.5.1(可用
@@ -124,18 +124,9 @@ Required for an update of an already listed plugin. As of v0.8.1:
    PLUGIN-202610210195、PLUGIN-202610220196、PLUGIN-202610220200。
 4. 插件源码与上架包在同一仓库维护:源码在 plugins/antianqi/mcode-island,
    上架包由 marketplace/build-marketplace-package.ps1 从该源码生成,
-   并由 marketplace/audit-marketplace-package.ps1 自动审计(228 项检查,0 失败)。
+   并由 marketplace/audit-marketplace-package.ps1 自动审计(245 项检查,0 失败)。
 
 本次更新(v0.8.0 → v0.9.0)内容:
-- v0.8.2 两条线正式分家:源码里只留一个开关 $script:clickPrefers,本仓库的
-  CLI 版是 'terminal'(点一下隐藏终端、再点唤回),Marketplace 包由构建器把
-  这一行翻成 'app'(点一下聚焦桌面应用主窗口)。翻不到这行,构建直接失败,
-  不会把 CLI 的行为静默发给桌面端用户。pin 在两个形态里都是最高优先级。
-- v0.9.0 上架多会话列表:鼠标停在 pill 上会展开当前所有活着的会话(状态点、
-  会话名、最后一条消息、多久没动),点一行就回到那个会话 —— 先切 Windows
-  Terminal 标签页;会话住在桌面端 app 里的话,就把 app 切到那个对话(app
-  侧边栏那一行是无障碍名等于会话名的按钮,widget 用 UI Automation 点它)。
-  点一行不会给已经在别处开着的会话再开一个终端。
 - v0.8.0 点击行为适配桌面端:点 pill 聚焦桌面应用主窗口(MiniMax Inside Code /
   MiniMax Code / Mavis),不再隐藏终端;优先级为 手动 pin > 桌面端应用窗口 >
   来源终端窗口(保留原来的显隐切换)。手动 pin 从 caller.json 移到独立的
@@ -146,6 +137,15 @@ Required for an update of an already listed plugin. As of v0.8.1:
   会话,于是新对话里状态条一直停在上一个任务完成的状态。现在改为按需扩大
   回看窗口直到读到完整的一行,缓存按 路径+修改时间 双键,读失败时不再借用
   别的会话的状态。
+- v0.8.2 两条线正式分家:源码里只留一个开关 $script:clickPrefers,本仓库的
+  CLI 版是 'terminal'(点一下隐藏终端、再点唤回),Marketplace 包由构建器把
+  这一行翻成 'app'(点一下聚焦桌面应用主窗口)。翻不到这行,构建直接失败,
+  不会把 CLI 的行为静默发给桌面端用户。pin 在两个形态里都是最高优先级。
+- v0.9.0 上架多会话列表:鼠标停在 pill 上会展开当前所有活着的会话(状态点、
+  会话名、最后一条消息、多久没动),点一行就回到那个会话 —— 先切 Windows
+  Terminal 标签页;会话住在桌面端 app 里的话,就把 app 切到那个对话(app
+  侧边栏那一行是无障碍名等于会话名的按钮,widget 用 UI Automation 点它)。
+  点一行不会给已经在别处开着的会话再开一个终端。
 
 包仍满足上架规则:纯 ASCII、无 BOM、无凭据、无 Hook、仅 MiniMax Plugin V1
 manifest,所有 .ps1 带 Windows 平台守卫。
