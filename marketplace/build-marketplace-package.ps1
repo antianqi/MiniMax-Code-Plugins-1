@@ -84,6 +84,7 @@ $runtimeFiles = @(
   'scripts/lib/Status-Store.ps1'
   'scripts/lib/Plan-Usage.ps1'
   'scripts/lib/Session-Tracker.ps1'
+  'scripts/lib/Safe-Traversal.ps1'
 )
 
 $copyBinaryFiles = @(
@@ -300,6 +301,11 @@ $byteLiteralTranslations = @{
   '执行 '                         = 'Running '
   '…'                             = '...'
   ' · '                           = ' - '
+  # the dismiss mark on a session row, and its tooltip
+  '×'                             = 'x'
+  '从列表中消除（不跳转）'         = 'Remove from the list (no switch)'
+  '还有 '                         = ''
+  ' 条'                           = ' more'
 }
 
 # --- a package must never contain these --------------------------------------

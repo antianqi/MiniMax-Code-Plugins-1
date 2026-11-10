@@ -152,6 +152,13 @@ $cfgFile    = Join-Path $configDir 'config.json'
 # Shared redaction helper (round-20). The detector is the SECOND producer
 # of tool text -- it re-derives messages from mcode's session log rather
 . "$PSScriptRoot/scripts/lib/Protect-Text.ps1"
+# Safe traversal of the sessions root (round-24 review, hetaoBackend).
+# SearchOption.AllDirectories follows reparse points, so a junction under the
+# sessions root could redirect the walk outside it and hand the detector a log
+# that does not belong to this user. This lib replaces the blind recursion
+# with a traversal that refuses reparse points and checks canonical
+# containment before a candidate is opened.
+. "$PSScriptRoot/scripts/lib/Safe-Traversal.ps1"
 . "$PSScriptRoot/scripts/lib/Plan-Usage.ps1"
 # Cross-process status.json protocol (round-21 review #1).
 # both write status.json. They had no mutual exclusion: the detector
@@ -287,7 +294,10 @@ function Get-LatestSessionFile {
   $best = $null
   $bestMtime = [DateTime]::MinValue
   $bestIsLedger = $false
-  foreach ($f in [System.IO.Directory]::EnumerateFiles($sessionsRoot, '*.jsonl', 'AllDirectories')) {
+ # Round-24 review: no blind AllDirectories recursion (it follows reparse
+ # points). Get-SafeSessionEntries refuses reparse-point entries and
+ # verifies canonical containment before anything is opened.
+  foreach ($f in (Get-SafeSessionEntries -Root $sessionsRoot -Pattern '*.jsonl' -Files)) {
     $name = [System.IO.Path]::GetFileName($f)
     $isLedger = ($name -eq $FNAME_LEDGER)
     $isMsgs   = ($name -eq $FNAME_MESSAGES)

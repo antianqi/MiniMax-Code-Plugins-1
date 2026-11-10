@@ -269,6 +269,12 @@ mcode-island/
 │           ├── subagent-stop.ps1
 │           ├── permission-request.ps1
 │           └── permission-denied.ps1
+├── scripts/                          # test suites (not needed at runtime)
+│   ├── smoke.mjs                     # static + material checks
+│   ├── test-material-injection.mjs   # negative-injection harness
+│   ├── test-session-tracker.ps1      # detector / redaction checks
+│   ├── test-substep-progress.mjs     # sub-step progress checks
+│   └── lib/Session-Tracker.ps1       # shared detector logic
 ├── skills/mcode-island/SKILL.md      # Skill consumed by the agent
 └── assets/                           # screenshots embedded above
 ```
@@ -297,7 +303,7 @@ binary, no symlink, no `node_modules`.
 | `sessions.json`  | `%APPDATA%\mcode-island\`             | rewritten every second    | the session list (titles, previews, states) |
 | `caller.json`    | `%APPDATA%\mcode-island\`             | rewritten every transition | originating terminal HWND (click fallback) |
 | `pin.json`       | `%APPDATA%\mcode-island\`             | until `mcode-island unpin` | manually pinned click target        |
-| `config.json`    | `%APPDATA%\mcode-island\`             | rewritten on drag         | pill position, size, opacity         |
+| `config.json`    | `%APPDATA%\mcode-island\`             | rewritten on drag         | pill position, size, opacity, material pole |
 | `config.json` -> `planApiTokenEnc` | `%APPDATA%\mcode-island\` | until `-Clear` or manual edit | 5h usage API token, DPAPI-encrypted (opt-in; see "Accounts") |
 | `widget.pid`     | `%APPDATA%\mcode-island\`             | rewritten on start        | widget process PID                   |
 | `island.log`     | `%APPDATA%\mcode-island\`             | append-only, never pruned  | state transition history             |
@@ -526,9 +532,184 @@ the bug this feature is meant to avoid.
 Clicking a row also dismisses it: the session leaves the list and stays
 out of it until it starts its next round.
 
+**The × on each row dismisses it without going anywhere.** Clicking the
+row body means "take me back to that session". The × means "I am done with
+this one" — and those are different intentions. Sometimes the rows in the
+list are conversations you have already dealt with, and you do not want to
+be dragged out of whatever you are doing to get rid of them.
+
+So the × dismisses the row and nothing else:
+
+- it does **not** switch to the session, and does not open a terminal;
+- it does **not** close the list — the row disappears, the list shrinks,
+  and the next row's × is right there, so several rows can be dismissed in
+  a row;
+- it **gives the focus back** to the window that had it. Pressing the
+  mouse button hands the focus to the pill; for "jump to that session"
+  that is fine, but for "just dismiss this" it would cost the user their
+  editor's focus. The widget captures the foreground window when the
+  mouse enters the pill and hands it back afterwards.
+
+Dismissal uses the same rule as a row click: the session stays out of the
+list until it starts its next round, then it comes back on its own.
+
 The list is fed by the detector, which writes `sessions.json` next to
 `status.json` in `%APPDATA%\mcode-island\`. That file is the contract
 between the detector and the widget; the widget only reads it.
+
+**The list is bounded.** Three limits, on purpose:
+
+- the detector keeps at most **20** sessions (`MAX_SESSIONS`), dropping the
+  ones that have been idle the longest;
+- the widget draws at most **12** rows (`MAX_SESSION_ROWS`) and says
+  "还有 N 条" underneath, rather than silently dropping them — a row that
+  vanished without a word would be read as "that is all there is", which
+  is the exact question the list exists to answer;
+- `sessions.json` itself is capped at **64 KB** (`MAX_SESSIONS_JSON_BYTES`).
+  The row cap does not bound the file: every row also carries its title
+  history, and the dismissed map has no cap at all — so the write path
+  measures the serialized bytes and drops the oldest rows until it fits.
+
+The list height is also clamped to the work area, so it can never grow
+past the screen.
+
+## The session list's file boundary
+
+The tracker and the detector both walk the sessions tree to find the session
+logs. That walk is **bounded**: it never uses `SearchOption.AllDirectories`
+— which, per Microsoft's own documentation, *follows reparse points*
+(symbolic links, junctions, mounted volumes) — and it refuses any candidate
+that is a reparse point or that does not stay under the canonical sessions
+root. A junction under the sessions root therefore cannot hand the widget a
+log from somewhere else on the machine.
+
+`scripts/test-session-tracker.ps1` proves it on Windows: it builds a real
+junction pointing at a directory outside the sessions root, puts a session
+there, and checks that the session never reaches the list — and that the old
+blind recursion *would* have found it, so the assertion cannot pass for the
+wrong reason.
+
+## The material — Liquid Glass
+
+The pill is not a translucent rectangle. It is a **real frosted material**
+built to Apple's design language: [Human Interface Guidelines —
+Materials](https://developer.apple.com/design/human-interface-guidelines/materials)
+and [Color](https://developer.apple.com/design/human-interface-guidelines/color),
+as presented at WWDC25 (*Meet Liquid Glass*).
+
+The rules those documents set, and how the widget obeys them:
+
+| guideline | what the widget does |
+| --------- | -------------------- |
+| "Liquid Glass has no inherent color, and instead takes on colors from the content directly behind it" | the glass body starts as `Transparent` and is painted at runtime from a live screen capture; no hard-coded tint survives in the source |
+| "blurs and adjusts the luminosity of background content to maintain legibility" | the backdrop is captured and blurred, and the glass is mixed towards a **target grey** that keeps the text legible whatever is behind it |
+| "Liquid Glass appears more opaque in larger elements" | the expanded panel converges on a *darker* target grey than the pill, so the large element reads as a thicker slab of the same material |
+| specular highlights scale with geometry | a one-pixel rim light on the top edge, a darker inner edge below it, and a soft drop shadow under the whole body |
+
+**The material layers paint; they do not measure.** The four material
+paths (`Tint`, `Grain`, `Rim`, `Edge`) are drawn with a geometry that
+covers the whole glass body, and a WPF `Path` measures as big as its `Data`.
+Inside the layout they would hold the panel at the height of the *previous*
+frame: the expanded panel sits in an `Auto` row, so its height would be
+`max(last material rectangle, content height)` — the content could shrink
+and the panel would not, and every open made the black slab a little taller
+until it ran off the bottom of the screen. The layers therefore live in a
+`Canvas`, which does not measure its children: they paint, and nothing
+else.
+
+**How the frost is made.** The widget grabs the desktop behind itself
+(`SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` so the capture never
+includes the pill), downsamples it 4×, applies a WPF `BlurEffect`, and scales
+it back up — 24 physical pixels of blur radius, computed in physical pixels.
+A ≤3 % noise grain rides on top, so the frost has the slight tooth of a real
+material instead of the plastic look of a clean Gaussian.
+
+**One material: black glass, whatever is behind it.** The rule that
+decides everything is HIG's *"adjusts the luminosity of background content"*.
+The widget does not lay a translucent plate over the screen; it **solves for
+a target grey** and mixes the backdrop towards it:
+
+    behind is brighter than the target  ->  mix in black:  veil = 1 - target / L
+    behind is darker than the target    ->  mix in white:  lift = (target - L) / (1 - L)
+
+The dark pole targets **0.115** (byte 29 ≈ `#1D1D1D`, the black macOS's
+Dynamic Island uses), so the glass lands on the same grey whether it sits on
+a white document or on a black terminal. That is the *unified* look: the
+island is one black slab, and only the frost shows what is behind it.
+
+The earlier build mixed in a *fixed* proportion of black instead. Over a
+white page the glass then settled at byte 106 (≈ `#6A6A6A`) — a mid grey
+— and the dark labels on top of it turned to mud. Solving for a target
+instead of guessing a wash is what removes the grey.
+
+| pole | target grey | content | used when |
+| ---- | ----------- | ------- | --------- |
+| `dark` (default) | 0.115 — island black | white content, Apple dark-mode system colours | always, unless pinned otherwise |
+| `light` | 0.90 — near-white | dark content, macOS-style black-transparent labels | pinned explicitly |
+
+The pale pole is still there for people who want the island to blend into a
+light document, and it now converges on near-white the same way. The pole
+switch has **hysteresis** — bright past 0.60 to go light, dark past 0.58 to
+go back — so a background flickering near the threshold does not make the
+pill strobe.
+
+**Each surface picks its own pole.** The pill and the expanded panel are two
+separate pieces of glass, and what is behind them can be wildly different —
+the pill can sit on a bright title bar while the panel below it covers a
+dark editor. So the polarity, the foreground colours and the grain are
+decided **per surface**, not once for the whole widget: each glass body
+measures its own backdrop and picks its own pole.
+
+This is not a detail. An earlier build shared one global polarity, and the
+panel's decision overwrote the pill's: the pill ended up as dark glass with
+dark text, and the two surfaces flipped each other every 100 ms — the widget
+looked broken. HIG "Materials" says the same thing in one line: each material
+adjusts its own luminosity to keep what is written on it legible.
+
+**Reading the log.** `widget.log` keeps one line per surface, so a polarity
+question is answerable without a debugger:
+
+```
+GLASS PILL POLE -> light        # the pill switched poles
+GLASS Pill L=0.837 pole=light    # ...at this backdrop brightness
+GLASS PANEL POLE -> dark         # the panel decided separately
+GLASS Panel L=0.528 pole=dark
+```
+
+The luminance slot is per surface too. Sharing one slot between the two
+surfaces meant the brightness line was almost never written for the second
+surface — and "why did the panel go white?" became unanswerable, because the
+panel's pole change was the only trace of it in the log.
+
+**Contrast is guaranteed, not hoped for.** All the material constants are
+named (`$script:glassTargetByteDark`, `$script:glassThickDark`, …) rather
+than buried in expressions, so the smoke suite reads them, re-derives the
+worst case over the real backdrop, and recomputes the WCAG ratio. Current
+worst case: **16.57 : 1** primary text on the dark pole, **10.56 : 1** on the
+light pole, with secondary text at **5.86 : 1** / **3.88 : 1**.
+
+Converging on a target grey is what buys those numbers. Because the glass
+lands on the same grey over *every* backdrop, the contrast is a property of
+the material, not of whatever happens to be behind it — which is also why
+the old "secondary text below WCAG AA on a bright backdrop" trade-off is
+gone: on the dark pole the secondary text now clears 4.5 : 1 as well.
+
+**Configuration.** `materialPole` in `config.json`:
+
+| value | meaning |
+| ----- | ------- |
+| `dark` (default) | the unified black glass, whatever is behind it |
+| `light` | the pale glass with dark content |
+| `auto` | switch between the two from the measured backdrop brightness |
+
+The default is `dark`, because that is what the Dynamic Island does on
+macOS: it does not change colour with the page underneath it. `auto` is
+there for people who want the island to blend into a light document, and
+`light` to pin the pale material outright.
+
+**Known trade-off.** `SetWindowDisplayAffinity` makes the widget invisible to
+screen recorders for the ~10–30 ms each capture window (every 2.5 s). A
+recording of the screen may occasionally drop a frame of the pill.
 
 ## Test evidence
 
@@ -542,6 +723,12 @@ a live MiniMax Code session. Empirical evidence (captured during development):
   `waiting` → `working` → `done` on a real `bash npm test` run.
 - Click-to-focus round-trip verified: from a Feishu tab, click the pill, focus
   jumps to the originating Windows Terminal tab (HWND consistent).
+- Per-row × verified on a live machine with real mouse input: the row is
+  removed from `sessions.json` within a second, the list stays open and
+  shrinks by one row, the foreground window is unchanged before and after
+  the click (`pid` and `hwnd` identical), and a second × dismisses a second
+  row — two dismissals in one second both land, which is what the
+  multi-id `ack.signal` is for.
 - Click-target order verified against the live desktop app: with
   `MiniMax Inside Code` running, the click resolves to the app window
   (`mode=focus`, never hidden); with a `pin.json` present it resolves to the
@@ -552,6 +739,58 @@ a live MiniMax Code session. Empirical evidence (captured during development):
   wrapper no longer executes the command itself; the agent runs the command
   through mcode's own bash tool and passes the exit code to `wrap-tool.ps1
   -ExitCode`.
+- Material engine verified against a deterministic white backdrop on a live
+  machine: the island renders as **black glass** over the white page — not
+  the mid grey (`#6A6A6A`) the fixed-wash model produced — with white text
+  and a visible frost. Pixel-sampled on that screenshot: a blue shape behind
+  the glass comes through as `rgb(15,29,43)`, i.e. 11.5 % of `rgb(0,122,255)`
+  — the frost transmits the backdrop while keeping its hue, which is the
+  whole point of adjusting luminance instead of washing grey over it.
+- The same island over a dark terminal is the same black slab: the terminal's
+  clock and text come through the panel blurred, so the frost still reads
+  while the material stays black.
+- The **split backdrop** case verified on a live machine: a bright strip
+  under the pill and the dark terminal under the panel, each surface reading
+  its own backdrop and picking its own pole — simultaneously, with no flicker
+  in the log (`Pill L=0.837 pole=light` / `Panel L=0.528 pole=dark`, stable over
+  several refresh cycles).
+  The harness proves the stacking before it grabs anything
+  (`WindowFromPoint` at the pill must resolve to the widget process, and the
+  island is raised with `SetWindowPos`/`HWND_TOPMOST` first) — without that
+  check the bright strip can end up *on top of* the island, in which case the
+  screenshot shows the strip's own crisp text instead of glass and the run
+  looks like it passed while proving nothing.
+- The material assertions are **negative-injection tested**:
+  `scripts/test-material-injection.mjs` mutates one line of a **copy** of the
+  source 44 times (a hard-coded tint coming back, the capture affinity call
+  removed, the measure/arrange step skipped, the grain opacity raised, the two poles'
+  colour tables diverged, the hysteresis removed, the panel made thinner
+  than the pill, the two surfaces sharing one polarity again, the luminance
+  log slot going back to one shared value, the convergence formula replaced
+  by a fixed wash, the thickness factor shadowing the typed `$Thick`
+  parameter, an XML comment left unclosed in the XAML, the XAML block
+  unreadable, the comment strip itself broken, the strip knowing only one of
+  the two HTML comment end tags, the strip advancing by the wrong length, the dismiss mark no longer focusable, the keyboard handler never attached, the keyboard handler no longer dismissing, the keyboard handler dropping Space, the keyboard handler dropping Return, …),
+  checks that
+  the expected assertion turns red each time, and confirms the suite is
+  green again after the source is restored. The copy is not an optimisation:
+  the harness used to rewrite the checked-in file in place, and `node --test`
+  runs every suite in the repository in parallel -- a sibling suite that read
+  the widget mid-write saw a half-written file and reported a function that
+  is in the source as missing. A watcher now re-reads the working-tree
+  sources for the whole run and fails if any of them moved, so that race
+  cannot come back.
+- The XAML is stripped of its XML comments **before** the material
+  assertions read it, so a comment in the source cannot feed them. The strip
+  walks the text instead of running a regex: a paired comment is dropped
+  whole, an unclosed `<!--` drops everything after it, so the result never
+  carries a comment marker. It knows **both** HTML comment end tags
+  (`-->` and `--!>`) and advances by the tag's real length, so neither form
+  leaves a character behind. Three assertions say that out loud (every
+  comment in the XAML is closed; the stripped XAML carries no marker left;
+  the strip recognises every HTML comment end tag -- checked against a
+  probe, because the widget's own XAML never uses `--!>`), and a fourth
+  reports when the XAML block cannot be read at all.
 
 ## Limitations
 

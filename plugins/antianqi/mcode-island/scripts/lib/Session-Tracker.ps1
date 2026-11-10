@@ -49,6 +49,17 @@ $script:SEED_WINDOW_MS = 30 * 60 * 1000
 # 那就不脱敏（而不是崩）。
 $script:canRedact = [bool](Get-Command Protect-SecretText -ErrorAction SilentlyContinue)
 
+# Safe traversal of the sessions root (round-24 review). The helper lives in
+# scripts/lib/Safe-Traversal.ps1 and is loaded by the detector before this
+# file, the same way Protect-Text.ps1 is.
+#
+# A lib that is dot-sourced on its own does not have it. That case reads
+# NOTHING rather than falling back to the blind recursion it replaced: that
+# recursion follows reparse points, so a junction under the sessions root
+# could hand it a log from outside it. Fail closed. The check happens where
+# the traversal runs, not once at load time, so the order of the dot-sources
+# cannot change the verdict.
+
 # 活动窗口：日志刚被写过，session 才算"有活动"。
 #
 # 这个窗口只决定"能不能进列表"，不决定进列表之后显示什么：
@@ -90,16 +101,62 @@ $script:PRUNE_AFTER_MS = 30 * 60 * 1000
 # "待回复"不看这个窗口：球在用户那边，用户半小时不回，它还是待回复。
 $script:STALE_RUNNING_MS = 5 * 60 * 1000
 
+# 一次最多跟多少个会话。
+#
+# 列表是"现在还活着的会话"，但它不该无限长：一上午开几十个会话，列表会顶
+# 满屏幕，sessions.json 也会长成一本历史书 —— 里面存着每个会话说过的话。
+# 30 分钟的活性窗口管"旧的会消失"，这个数管"活的同时有几十个时取哪些"：
+# 按最后活动时间留最近的这些，其余的淘汰。
+#
+# 20 是数据侧的上限；widget 还会按窗口高度再裁一次（见 mcode-island.ps1 的
+# $script:MAX_SESSION_ROWS）。
+$script:MAX_SESSIONS = 20
+
+# sessions.json 这个文件本身的上限（字节）。
+#
+# 上面那个数管"有多少条"，这个管"这个文件多大"。条数上限够不着文件大小：
+# 每条会话还带着 titles 历史（最多 8 条），dismissed 那张表也没有条数上限，
+# 两者都随使用时长慢慢长。写盘前再按字节砍一遍，砍的顺序是会话优先、
+# dismissed 最后。
+$script:MAX_SESSIONS_JSON_BYTES = 65536
+
+# 会话 id 的形状。
+#
+# 这个值来自两处，都不是我们生成的：
+#   1. 会话目录名里的 base64 —— 解码出来是什么就是什么；
+#   2. sessions.json —— 上一次跑留下的，同样不可信。
+#
+# 它曾经被拼进一条命令字符串（"mcode --session $id" 交给 powershell
+# -Command），于是形如 x; Set-Content ... 的 id 能执行任意 PowerShell。
+# 那条路已经删掉了（匹配不上就失败关闭，不再新开终端），这里再把 id 本身
+# 收口：只认字母数字、下划线和连字符。
+#
+# 真实的 id 形如 mvs_70378ec639b2471a8f205b954e98a589；测试里也用过
+# e2e-test-001 这种。两者都在这个范围内。
+$script:SESSION_ID_PATTERN = '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$'
+
+function Test-SessionIdSafe([string]$id) {
+  if (-not $id) { return $false }
+  return [bool]($id -match $script:SESSION_ID_PATTERN)
+}
+
 function Get-SessionIdFromDir($dir) {
   $name = [System.IO.Path]::GetFileName($dir)
   $i = $name.IndexOf('session_')
-  if ($i -lt 0) { return $name }
+  if ($i -lt 0) {
+    if (Test-SessionIdSafe $name) { return $name }
+    return ''
+  }
   $b64 = $name.Substring($i + 8)
   try {
     $pad = (4 - ($b64.Length % 4)) % 4
-    return [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64 + ('=' * $pad)))
+    $decoded = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64 + ('=' * $pad)))
+    # base64 里装的是什么都有可能 —— 解出来先过白名单，不合法就当没有。
+    if (Test-SessionIdSafe $decoded) { return $decoded }
+    return ''
   } catch {
-    return $name
+    if (Test-SessionIdSafe $name) { return $name }
+    return ''
   }
 }
 
@@ -114,7 +171,12 @@ function Get-SessionIdFromDir($dir) {
 function Get-SessionLogGroups($root) {
   $groups = @{}
   if (-not $root -or !(Test-Path -LiteralPath $root)) { return $groups }
-  foreach ($dir in [System.IO.Directory]::EnumerateDirectories($root, '*session_*', 'AllDirectories')) {
+  # Round-24 review (hetaoBackend): SearchOption.AllDirectories follows
+  # reparse points, so a junction under the sessions root could redirect the
+  # walk outside it. Get-SafeSessionEntries refuses reparse-point entries and
+  # checks canonical containment before a candidate is handed back.
+  if (-not (Get-Command Get-SafeSessionEntries -ErrorAction SilentlyContinue)) { return $groups }
+  foreach ($dir in (Get-SafeSessionEntries -Root $root -Pattern '*session_*')) {
     $log = $null
     $mtime = [DateTime]::MinValue
     foreach ($name in @($FNAME_LEDGER, $FNAME_MESSAGES)) {
@@ -125,6 +187,9 @@ function Get-SessionLogGroups($root) {
     }
     if (-not $log) { continue }
     $id = Get-SessionIdFromDir $dir
+    # 解不出合法 id 就跳过这个目录：没有 id 就没法去重，也没法在列表里
+    # 指向它，硬塞一个进去只会让同一条出现好几次（$groups[''] 互相覆盖）。
+    if (-not $id) { continue }
     $groups[$id] = @{ Id = $id; Dir = $dir; Log = $log; MTime = $mtime }
   }
   return $groups
@@ -402,21 +467,49 @@ function Remove-TrackedSession($id) {
 #
 # 复用插件里已有的 show.signal 模式：widget 建一个文件，detector 看到就
 # 处理。ack.signal 里写要消掉的 session id。
+#
+# **一行一个 id，可以有多行。**
+#
+# 以前是一个文件一个 id。用户在一秒内点两行，后写的盖掉先写的，那一条
+# 就永远消不掉。现在列表每行都有 × 可以单独消除，"一秒内消掉两三条"是很
+# 正常的操作，所以改成追加。
+#
+# 消费方式是**改名**，不是读+删：
+#   读+删有两个窗口期 —— 读到之后、删之前，widget 写进来的新 id 会被
+#   一起删掉（那一条就丢了）；而且读到的可能是写了一半的文件。
+#   改名是原子的：rename 之后 widget 的下一次写入落在新的 ack.signal 里，
+#   不会被这一轮带走。
 function Read-AckSignal {
   $ackFile = Join-Path $configDir 'ack.signal'
-  if (!(Test-Path -LiteralPath $ackFile)) { return $null }
-  $id = $null
-  try { $id = (Get-Content -LiteralPath $ackFile -Raw -Encoding UTF8) } catch { $id = $null }
-  try { Remove-Item -LiteralPath $ackFile -Force -ErrorAction SilentlyContinue } catch {}
-  if ($id) { return $id.Trim() }
-  return $null
+  if (!(Test-Path -LiteralPath $ackFile)) { return @() }
+  # 先改名再读。改名失败（文件刚好被另一个进程动了）就放弃这一轮，下一
+  # 轮再来 —— 总比读到一个写了一半的文件强。
+  $taken = $ackFile + '.taken'
+  try {
+    Move-Item -LiteralPath $ackFile -Destination $taken -Force -ErrorAction Stop
+  } catch {
+    return @()
+  }
+  $ids = @()
+  try {
+    $raw = [System.IO.File]::ReadAllText($taken)
+    foreach ($line in ($raw -split "`r?`n")) {
+      $id = $line.Trim()
+      if (-not $id) { continue }
+      $ids += $id
+    }
+  } catch {
+    $ids = @()
+  } finally {
+    try { Remove-Item -LiteralPath $taken -Force -ErrorAction SilentlyContinue } catch {}
+  }
+  return @($ids)
 }
 
 # 每轮更新一次 session 列表。
 function Update-SessionTracker {
-  # 用户点掉的先消化掉
-  $acked = Read-AckSignal
-  if ($acked) {
+  # 用户点掉的先消化掉。一次可能有多个（一行一个 id）。
+  foreach ($acked in @(Read-AckSignal)) {
     if (Remove-TrackedSession $acked) { Log-Line "session ack: $acked" }
   }
 
@@ -580,6 +673,83 @@ function Update-SessionTracker {
     $script:sessionsDirty = $true
     Log-Line ("sessions pruned: " + $pruned)
   }
+
+  # 活性窗口管不住"同一时刻活着的会话很多"：一上午开几十个，30 分钟内它们
+  # 全都还在。这里再按最后活动时间留最近的 MAX_SESSIONS 个，其余淘汰 ——
+  # 列表有界，sessions.json 也有界。
+  #
+  # 只淘汰**已经不活跃**的会话（日志超过活性窗口没动）。不然有个更糟的后果：
+  # 被淘汰的会话日志还在活性窗口里，下一次扫描会把它当"新会话"重新收进来，
+  # 于是每个 tick 都在"淘汰 → 重新加入"，列表闪烁、SinceMs 和 Cycle 每轮
+  # 归零。不活跃的会话淘汰后不会被捞回来（扫描只收窗口内动过的），等它真的
+  # 又有动静才以新的一轮回来。
+  #
+  # 代价是"同时活跃的会话超过上限时列表会短暂超一点"。这是有意的：砍掉一个
+  # 正在干活的会话，比多画两行糟得多；屏幕那一侧还有行数上限兜着。
+  $over = [int]$script:trackedSessions.Count - [int]$script:MAX_SESSIONS
+  if ($over -gt 0) {
+    $idle = @()
+    foreach ($id in @($script:trackedSessions.Keys)) {
+      $e = $script:trackedSessions[$id]
+      $lastMs = $e.LastAtMs
+      if (-not $lastMs) { $lastMs = $e.SinceMs }
+      $ageMs = if ($lastMs) { $nowMs - [int64]$lastMs } else { [int64]::MaxValue }
+      if ($ageMs -gt $script:ACTIVE_WINDOW_MS) {
+        $idle += [PSCustomObject]@{ Id = $id; Last = $(if ($lastMs) { [int64]$lastMs } else { [int64]0 }) }
+      }
+    }
+    $victims = @($idle | Sort-Object Last | Select-Object -First $over | ForEach-Object { $_.Id })
+    foreach ($id in $victims) {
+      $script:trackedSessions.Remove($id)
+      # 淘汰的会话也不该在 dismissed 里留一辈子的记录。
+      $script:dismissedSessions.Remove($id)
+    }
+    if ($victims.Count -gt 0) {
+      $script:sessionsDirty = $true
+      Log-Line ("sessions capped: dropped " + $victims.Count + " (limit " + $script:MAX_SESSIONS + ")")
+    }
+  }
+}
+
+# 把 sessions.json 压到字节上限以内。
+#
+# 砍的顺序有讲究：会话按最后活动时间从旧到新丢（用户最可能还在看的留着），
+# 都丢完了还不够才清 dismissed。返回最终要写盘的 JSON 文本。
+function Limit-SessionsJson($items, $dismissed, [int64]$maxBytes) {
+  $utf8 = [System.Text.Encoding]::UTF8
+  # WriteAllText 带 BOM，文件比字符串多这几个字节，一起算进上限。
+  $overhead = $utf8.GetPreamble().Length
+  $keep = @($items)
+  $dismiss = @{}
+  foreach ($k in @($dismissed.Keys)) { $dismiss[$k] = $dismissed[$k] }
+  $dropped = 0
+  while ($true) {
+    $payload = [PSCustomObject]@{
+      sessions = $keep
+      dismissed = $dismiss
+      ts = (Get-Date).ToString('o')
+    }
+    $json = $payload | ConvertTo-Json -Compress -Depth 6
+    if (($utf8.GetByteCount($json) + $overhead) -le $maxBytes) {
+      if ($dropped -gt 0) {
+        Log-Line ("sessions.json byte cap: dropped " + $dropped + " row(s) (limit " + $maxBytes + " bytes)")
+      }
+      return $json
+    }
+    if ($keep.Count -gt 0) {
+      $oldest = @($keep | Sort-Object { [int64]$_.lastAtMs })[0]
+      $oldestId = [string]$oldest.id
+      $keep = @($keep | Where-Object { [string]$_.id -ne $oldestId })
+      $dropped++
+      continue
+    }
+    if ($dismiss.Count -gt 0) {
+      $dismiss = @{}
+      continue
+    }
+    # 会话和 dismissed 都清空了还是超：上限小得离谱，写一个空壳。
+    return '{"sessions":[],"dismissed":{},"ts":"' + (Get-Date).ToString('o') + '"}'
+  }
 }
 
 # 写 sessions.json。
@@ -608,15 +778,11 @@ function Write-SessionsFile {
       titles = @($e.Titles | Where-Object { $_ })
     }
   }
-  $payload = [PSCustomObject]@{
-    sessions = $items
-    dismissed = $script:dismissedSessions
-    ts = (Get-Date).ToString('o')
-  }
   $lock = Enter-StatusLock
   try {
     $file = Join-Path $configDir 'sessions.json'
-    $json = $payload | ConvertTo-Json -Compress -Depth 6
+    # 字节上限：条数上限管"有多少条"，这个管"这个文件多大"。
+    $json = Limit-SessionsJson $items $script:dismissedSessions $script:MAX_SESSIONS_JSON_BYTES
     $tmp = "$file.tmp"
     [System.IO.File]::WriteAllText($tmp, $json, [System.Text.Encoding]::UTF8)
     Move-Item -Path $tmp -Destination $file -Force
@@ -636,6 +802,12 @@ function Restore-SessionTracker {
     $j = [System.IO.File]::ReadAllText($file) | ConvertFrom-Json
     foreach ($s in @($j.sessions)) {
       if (-not $s.id) { continue }
+      # sessions.json 是上一次跑写下的，里面可能有任何东西 —— 包括被手改过
+      # 的 id。不合法的直接丢掉，不让它进入列表。
+      if (-not (Test-SessionIdSafe ([string]$s.id))) {
+        Log-Line "sessions restore: dropped entry with an unsafe id"
+        continue
+      }
       $script:trackedSessions[$s.id] = @{
         Id = $s.id
         Title = [string]$s.title

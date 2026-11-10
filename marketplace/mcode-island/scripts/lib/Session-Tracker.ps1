@@ -38,6 +38,16 @@ $script:SEED_WINDOW_MS = 30 * 60 * 1000
 # detector dot-source lib dot-source
 $script:canRedact = [bool](Get-Command Protect-SecretText -ErrorAction SilentlyContinue)
 
+# Safe traversal of the sessions root (round-24 review). The helper lives in
+# scripts/lib/Safe-Traversal.ps1 and is loaded by the detector before this
+# file, the same way Protect-Text.ps1 is.
+# A lib that is dot-sourced on its own does not have it. That case reads
+# NOTHING rather than falling back to the blind recursion it replaced: that
+# recursion follows reparse points, so a junction under the sessions root
+# could hand it a log from outside it. Fail closed. The check happens where
+# the traversal runs, not once at load time, so the order of the dot-sources
+# cannot change the verdict.
+
 # session " "
 # - " " mtime toolCall
 # toolCall " "
@@ -56,16 +66,49 @@ $script:PRUNE_AFTER_MS = 30 * 60 * 1000
 # 5
 $script:STALE_RUNNING_MS = 5 * 60 * 1000
 
+# sessions.json
+# 30 " " " "
+# 20 widget mcode-island.ps1
+# $script:MAX_SESSION_ROWS
+$script:MAX_SESSIONS = 20
+
+# sessions.json
+# titles 8 dismissed
+# dismissed
+$script:MAX_SESSIONS_JSON_BYTES = 65536
+
+# id
+# 1. base64
+# 2. sessions.json
+# "mcode --session $id" powershell
+# -Command x; Set-Content ... id PowerShell
+# id
+# id mvs_70378ec639b2471a8f205b954e98a589
+# e2e-test-001
+$script:SESSION_ID_PATTERN = '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$'
+
+function Test-SessionIdSafe([string]$id) {
+  if (-not $id) { return $false }
+  return [bool]($id -match $script:SESSION_ID_PATTERN)
+}
+
 function Get-SessionIdFromDir($dir) {
   $name = [System.IO.Path]::GetFileName($dir)
   $i = $name.IndexOf('session_')
-  if ($i -lt 0) { return $name }
+  if ($i -lt 0) {
+    if (Test-SessionIdSafe $name) { return $name }
+    return ''
+  }
   $b64 = $name.Substring($i + 8)
   try {
     $pad = (4 - ($b64.Length % 4)) % 4
-    return [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64 + ('=' * $pad)))
+    $decoded = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64 + ('=' * $pad)))
+ # base64
+    if (Test-SessionIdSafe $decoded) { return $decoded }
+    return ''
   } catch {
-    return $name
+    if (Test-SessionIdSafe $name) { return $name }
+    return ''
   }
 }
 
@@ -78,7 +121,12 @@ function Get-SessionIdFromDir($dir) {
 function Get-SessionLogGroups($root) {
   $groups = @{}
   if (-not $root -or !(Test-Path -LiteralPath $root)) { return $groups }
-  foreach ($dir in [System.IO.Directory]::EnumerateDirectories($root, '*session_*', 'AllDirectories')) {
+ # Round-24 review (hetaoBackend): SearchOption.AllDirectories follows
+ # reparse points, so a junction under the sessions root could redirect the
+ # walk outside it. Get-SafeSessionEntries refuses reparse-point entries and
+ # checks canonical containment before a candidate is handed back.
+  if (-not (Get-Command Get-SafeSessionEntries -ErrorAction SilentlyContinue)) { return $groups }
+  foreach ($dir in (Get-SafeSessionEntries -Root $root -Pattern '*session_*')) {
     $log = $null
     $mtime = [DateTime]::MinValue
     foreach ($name in @($FNAME_LEDGER, $FNAME_MESSAGES)) {
@@ -89,6 +137,9 @@ function Get-SessionLogGroups($root) {
     }
     if (-not $log) { continue }
     $id = Get-SessionIdFromDir $dir
+ # id id
+ # $groups['']
+    if (-not $id) { continue }
     $groups[$id] = @{ Id = $id; Dir = $dir; Log = $log; MTime = $mtime }
   }
   return $groups
@@ -320,20 +371,39 @@ function Remove-TrackedSession($id) {
 
 # show.signal widget detector
 # ack.signal session id
+# ** id **
+# id
+# + widget id
+# rename widget ack.signal
 function Read-AckSignal {
   $ackFile = Join-Path $configDir 'ack.signal'
-  if (!(Test-Path -LiteralPath $ackFile)) { return $null }
-  $id = $null
-  try { $id = (Get-Content -LiteralPath $ackFile -Raw -Encoding UTF8) } catch { $id = $null }
-  try { Remove-Item -LiteralPath $ackFile -Force -ErrorAction SilentlyContinue } catch {}
-  if ($id) { return $id.Trim() }
-  return $null
+  if (!(Test-Path -LiteralPath $ackFile)) { return @() }
+  $taken = $ackFile + '.taken'
+  try {
+    Move-Item -LiteralPath $ackFile -Destination $taken -Force -ErrorAction Stop
+  } catch {
+    return @()
+  }
+  $ids = @()
+  try {
+    $raw = [System.IO.File]::ReadAllText($taken)
+    foreach ($line in ($raw -split "`r?`n")) {
+      $id = $line.Trim()
+      if (-not $id) { continue }
+      $ids += $id
+    }
+  } catch {
+    $ids = @()
+  } finally {
+    try { Remove-Item -LiteralPath $taken -Force -ErrorAction SilentlyContinue } catch {}
+  }
+  return @($ids)
 }
 
 # session
 function Update-SessionTracker {
-  $acked = Read-AckSignal
-  if ($acked) {
+ # id
+  foreach ($acked in @(Read-AckSignal)) {
     if (Remove-TrackedSession $acked) { Log-Line "session ack: $acked" }
   }
 
@@ -467,6 +537,73 @@ function Update-SessionTracker {
     $script:sessionsDirty = $true
     Log-Line ("sessions pruned: " + $pruned)
   }
+
+ # " " 30
+ # MAX_SESSIONS
+ # sessions.json
+ # tick " " SinceMs Cycle
+  $over = [int]$script:trackedSessions.Count - [int]$script:MAX_SESSIONS
+  if ($over -gt 0) {
+    $idle = @()
+    foreach ($id in @($script:trackedSessions.Keys)) {
+      $e = $script:trackedSessions[$id]
+      $lastMs = $e.LastAtMs
+      if (-not $lastMs) { $lastMs = $e.SinceMs }
+      $ageMs = if ($lastMs) { $nowMs - [int64]$lastMs } else { [int64]::MaxValue }
+      if ($ageMs -gt $script:ACTIVE_WINDOW_MS) {
+        $idle += [PSCustomObject]@{ Id = $id; Last = $(if ($lastMs) { [int64]$lastMs } else { [int64]0 }) }
+      }
+    }
+    $victims = @($idle | Sort-Object Last | Select-Object -First $over | ForEach-Object { $_.Id })
+    foreach ($id in $victims) {
+      $script:trackedSessions.Remove($id)
+ # dismissed
+      $script:dismissedSessions.Remove($id)
+    }
+    if ($victims.Count -gt 0) {
+      $script:sessionsDirty = $true
+      Log-Line ("sessions capped: dropped " + $victims.Count + " (limit " + $script:MAX_SESSIONS + ")")
+    }
+  }
+}
+
+# sessions.json
+# dismissed JSON
+function Limit-SessionsJson($items, $dismissed, [int64]$maxBytes) {
+  $utf8 = [System.Text.Encoding]::UTF8
+ # WriteAllText BOM
+  $overhead = $utf8.GetPreamble().Length
+  $keep = @($items)
+  $dismiss = @{}
+  foreach ($k in @($dismissed.Keys)) { $dismiss[$k] = $dismissed[$k] }
+  $dropped = 0
+  while ($true) {
+    $payload = [PSCustomObject]@{
+      sessions = $keep
+      dismissed = $dismiss
+      ts = (Get-Date).ToString('o')
+    }
+    $json = $payload | ConvertTo-Json -Compress -Depth 6
+    if (($utf8.GetByteCount($json) + $overhead) -le $maxBytes) {
+      if ($dropped -gt 0) {
+        Log-Line ("sessions.json byte cap: dropped " + $dropped + " row(s) (limit " + $maxBytes + " bytes)")
+      }
+      return $json
+    }
+    if ($keep.Count -gt 0) {
+      $oldest = @($keep | Sort-Object { [int64]$_.lastAtMs })[0]
+      $oldestId = [string]$oldest.id
+      $keep = @($keep | Where-Object { [string]$_.id -ne $oldestId })
+      $dropped++
+      continue
+    }
+    if ($dismiss.Count -gt 0) {
+      $dismiss = @{}
+      continue
+    }
+ # dismissed
+    return '{"sessions":[],"dismissed":{},"ts":"' + (Get-Date).ToString('o') + '"}'
+  }
 }
 
 # sessions.json
@@ -493,15 +630,10 @@ function Write-SessionsFile {
       titles = @($e.Titles | Where-Object { $_ })
     }
   }
-  $payload = [PSCustomObject]@{
-    sessions = $items
-    dismissed = $script:dismissedSessions
-    ts = (Get-Date).ToString('o')
-  }
   $lock = Enter-StatusLock
   try {
     $file = Join-Path $configDir 'sessions.json'
-    $json = $payload | ConvertTo-Json -Compress -Depth 6
+    $json = Limit-SessionsJson $items $script:dismissedSessions $script:MAX_SESSIONS_JSON_BYTES
     $tmp = "$file.tmp"
     [System.IO.File]::WriteAllText($tmp, $json, [System.Text.Encoding]::UTF8)
     Move-Item -Path $tmp -Destination $file -Force
@@ -521,6 +653,12 @@ function Restore-SessionTracker {
     $j = [System.IO.File]::ReadAllText($file) | ConvertFrom-Json
     foreach ($s in @($j.sessions)) {
       if (-not $s.id) { continue }
+ # sessions.json
+ # id
+      if (-not (Test-SessionIdSafe ([string]$s.id))) {
+        Log-Line "sessions restore: dropped entry with an unsafe id"
+        continue
+      }
       $script:trackedSessions[$s.id] = @{
         Id = $s.id
         Title = [string]$s.title

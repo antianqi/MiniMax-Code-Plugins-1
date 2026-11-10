@@ -107,6 +107,31 @@ transition, so a pin stored there would not survive the next push. It is the
 way to point the click at your own terminal while the desktop app is open.
 `mcode-island unpin` clears it.
 
+## The material — Liquid Glass
+
+The pill is not a translucent rectangle. It is a **real frosted material**
+built to Apple's design language (Human Interface Guidelines — Materials and
+Color, as presented at WWDC25).
+
+| guideline | what the widget does |
+| --------- | -------------------- |
+| "Liquid Glass has no inherent color, and instead takes on colors from the content directly behind it" | the glass body starts as `Transparent` and is painted at runtime from a live screen capture; no hard-coded tint survives in the source |
+| "blurs and adjusts the luminosity of background content to maintain legibility" | the backdrop is captured and blurred, and the glass is mixed towards a **target grey** that keeps the text legible whatever is behind it |
+| "Liquid Glass appears more opaque in larger elements" | the expanded panel converges on a *darker* target grey than the pill, so the large element reads as a thicker slab of the same material |
+
+The material is drawn inside the pill's own window, so it moves with the pill
+and never shows a seam.
+
+## The session list's file boundary
+
+The tracker and the detector walk the sessions tree to find the session logs.
+That walk is **bounded**: it never uses `SearchOption.AllDirectories` — which,
+per Microsoft's own documentation, *follows reparse points* (symbolic links,
+junctions, mounted volumes) — and it refuses any candidate that is a reparse
+point or that does not stay under the canonical sessions root. A junction
+under the sessions root therefore cannot hand the widget a log from somewhere
+else on the machine.
+
 ## The session list
 
 Resting the mouse on the pill expands a list of **every session that is

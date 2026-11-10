@@ -4,7 +4,7 @@ description: Use this skill to publish the agent's live progress onto a Windows 
 license: Apache-2.0
 metadata:
   author: antianqi
-  version: 0.10.0
+  version: 0.11.0
 ---
 
 # mcode 灵动岛状态条
@@ -139,6 +139,13 @@ MiniMax Code 的程序跑任何东西。标题和预览在写盘和显示之前�
 点一行就回到那个会话 —— 先切 Windows Terminal 标签页,会话住在桌面端 app 里的话
 就把 app 切到那个对话(查找限定在 app 侧边栏的会话列表里,不是整扇窗口);不会给
 已经在别处开着的会话再开一个终端。
+
+**材质**:pill 是照 Apple 的 Liquid Glass 做的真磨砂材质 —— 玻璃本体初始透明,
+运行时从实时屏幕捕获里画出来,再混向一个保证文字可读的目标灰。源码里没有写死的
+颜色。材质画在 pill 自己的窗口里,跟着 pill 动。
+
+**文件边界**:探测器遍历会话目录是有边界的 —— 从不用会跟随重解析点的
+`SearchOption.AllDirectories`,重解析点和跑出会话根目录的候选一律拒绝。
 
 ## 7. 运行时数据
 

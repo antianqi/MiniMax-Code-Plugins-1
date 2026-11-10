@@ -81,6 +81,55 @@ const checkLiteralPaths = (s, where) => {
     }
 };
 
+// Strip XML comments out of an XAML block.
+//
+// NOT `replace(/<!--[\s\S]*?-->/g, '')`: that regex only removes a
+// `<!--` that has a matching `-->`, so an unclosed `<!--` survives the
+// "sanitisation" intact -- the sanitisation is incomplete, and a comment in
+// the source can still feed the assertions below. CodeQL flags exactly that
+// as js/incomplete-sanitization.
+//
+// This walks the text instead. A paired comment is dropped whole; an
+// unpaired `<!--` drops everything after it. Either way the result carries
+// no comment marker, which is the property the assertions actually need.
+// Where the next HTML comment end tag starts, or -1.
+//
+// HTML5 accepts "--!>" as a comment end as well as "-->", so a filter that
+// only knows "-->" leaves such a comment open (CodeQL:
+// js/bad-html-filtering-regexp).
+const xmlCommentEndAt = (s, from) => {
+    const m = /--!?>/.exec(s.slice(from));
+    if (!m) return null;
+    return { at: from + m.index, len: m[0].length };
+};
+
+const stripXmlComments = (s) => {
+    let keep = '';
+    let i = 0;
+    while (i < s.length) {
+        const open = s.indexOf('<!--', i);
+        if (open < 0) { keep += s.slice(i); break; }
+        keep += s.slice(i, open);
+        const close = xmlCommentEndAt(s, open + 4);
+        if (!close) break;               // unclosed: drop the rest
+        i = close.at + close.len;        // "-->" is 3 chars, "--!>" is 4
+    }
+    return keep;
+};
+
+// True when every `<!--` in the text has a comment end tag after it, in order.
+const xmlCommentsArePaired = (s) => {
+    let i = 0;
+    while (i < s.length) {
+        const open = s.indexOf('<!--', i);
+        if (open < 0) return true;
+        const close = xmlCommentEndAt(s, open + 4);
+        if (!close) return false;
+        i = close.at + close.len;
+    }
+    return true;
+};
+
 const checkEntry = async (event, entry) => {
     const where = `hooks.json[${event}]`;
     if (typeof entry !== 'object' || entry === null) {
@@ -613,15 +662,191 @@ const main = async () => {
             out('FAIL', 'mcode-island.ps1: Invoke-SessionClick does not try the app conversation');
         } else {
             out('PASS', 'mcode-island.ps1: Invoke-SessionClick tries the app conversation');
-            // The desktop branch must not reach the "open a new terminal"
-            // fallback: that is how one session ends up with two terminals.
-            const appBranch = sessionClickBody.indexOf("$script:clickPrefers -eq 'app'");
-            const newTerminal = sessionClickBody.indexOf('Start-SessionTerminal $id');
-            if (appBranch >= 0 && newTerminal > appBranch) {
-                out('PASS', 'mcode-island.ps1: the desktop branch returns before the new-terminal fallback');
+            // The "open a new terminal" fallback is gone and must stay gone.
+            //
+            // It built `powershell -Command "mcode --session <id>"` out of a
+            // value that came from a session directory's base64 and from
+            // sessions.json -- neither is trusted, so an id shaped like
+            // `x; Set-Content ...` was executable PowerShell. It also
+            // contradicted the feature: clicking a row means "go back to that
+            // session", never "start a second one".
+            //
+            // Two shapes of lock: the function is gone from the file, and the
+            // click handler spawns nothing. The handler's comments describe
+            // the old path, so the code check drops comment lines first --
+            // otherwise a comment could satisfy or break the lock by itself.
+            if (/function\s+Start-SessionTerminal\b/.test(widget)) {
+                out('FAIL', 'mcode-island.ps1: Start-SessionTerminal is back -- it turns a session id into PowerShell source');
+            } else if (/--session\s+\$/.test(widget)) {
+                out('FAIL', 'mcode-island.ps1: something interpolates a session id into a --session command line');
             } else {
-                out('FAIL', 'mcode-island.ps1: the desktop branch can reach the new-terminal fallback -- a session row would spawn a second terminal for the same session');
+                out('PASS', 'mcode-island.ps1: no code path turns a session id into a command line');
             }
+            const clickCode = sessionClickBody.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n');
+            if (/Start-Process|Start-SessionTerminal/.test(clickCode)) {
+                out('FAIL', 'mcode-island.ps1: Invoke-SessionClick still spawns something -- a row click must fail closed');
+            } else if (!/\$id\s+-notmatch\s+'/.test(clickCode)) {
+                out('FAIL', 'mcode-island.ps1: Invoke-SessionClick does not validate the session id before using it');
+            } else {
+                out('PASS', 'mcode-island.ps1: Invoke-SessionClick validates the id and spawns nothing');
+            }
+        }
+
+        // (k2) The per-row dismiss button.
+        //
+        // Clicking a row means "go back to that session", and it also drops
+        // the row from the list. Those are two different intentions: "I am
+        // done with this one" does not mean "take me there" -- switching
+        // would yank the user out of whatever they are doing.
+        //
+        // So each row carries a dismiss mark that only dismisses. Three
+        // things have to hold, and each is a separate lock:
+        //   1. the mark exists on the row,
+        //   2. it calls the dismiss path (not the click path),
+        //   3. it cannot reach the click path -- the row's own handler is
+        //      on the parent Border, and MouseLeftButtonDown bubbles, so
+        //      the mark has to mark the event handled.
+        const rowBody = (widget.match(/function Add-SessionRow[\s\S]*?\n\}\n/) || [''])[0];
+        // Comments inside the row mention the dismiss function by name, so a
+        // text search would be satisfied by the comment alone -- the row would
+        // look wired even with the call gone. Strip the comment lines first.
+        const rowCode = rowBody.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n');
+        if (!rowBody) {
+            out('FAIL', 'mcode-island.ps1: Add-SessionRow body not found (dismiss-button lock skipped)');
+        } else if (!/\$xMark\s*=/.test(rowCode) || !/Invoke-SessionDismiss/.test(rowCode)) {
+            out('FAIL', 'mcode-island.ps1: the session row has no dismiss mark, or it does not call Invoke-SessionDismiss');
+        } else {
+            out('PASS', 'mcode-island.ps1: the session row carries a dismiss mark wired to Invoke-SessionDismiss');
+            // The mark must not be able to reach the click handler: that
+            // handler switches the user to the session.
+            const dismissBlock = (rowCode.match(/\$xMark\.Add_MouseLeftButtonDown\(\{[\s\S]*?\}\)/) || [''])[0];
+            if (!dismissBlock) {
+                out('FAIL', 'mcode-island.ps1: the dismiss mark has no MouseLeftButtonDown handler');
+            } else if (!/Handled\s*=\s*\$true/.test(dismissBlock)) {
+                out('FAIL', 'mcode-island.ps1: the dismiss mark does not mark the event handled -- the click would bubble to the row and switch the session');
+            } else if (/Invoke-SessionClick/.test(dismissBlock)) {
+                out('FAIL', 'mcode-island.ps1: the dismiss mark calls the click path -- dismissing would also switch the session');
+            } else {
+                out('PASS', 'mcode-island.ps1: the dismiss mark stops the event and never calls the click path');
+            }
+        }
+
+        // The dismiss mark must also be keyboard-operable.
+        //
+        // A plain TextBlock is not focusable: Tab cannot reach it and
+        // Enter/Space do nothing, so the dismiss would be mouse-only. The
+        // panel is an overlay the user reaches with the mouse in the first
+        // place, but once the mark has the focus the keyboard has to work
+        // too.
+        // The keyboard handler has to be sliced out on its own: the mouse
+        // handler right above it also calls Invoke-SessionDismiss, so a
+        // wider window would let the mouse handler feed this assertion.
+        const xMarkKey = (rowCode.match(/\$xMark\.Add_KeyDown\(\{[\s\S]*?\}\.GetNewClosure\(\)/) || [''])[0];
+        const xMarkSetup = (rowCode.match(/\$xMark\s*=[\s\S]*?\$xMark\.Add_KeyDown\(\{/) || [''])[0];
+        if (!xMarkKey) {
+            out('FAIL', 'mcode-island.ps1: the dismiss mark has no keyboard handler -- Enter/Space would do nothing');
+        } else if (!/Focusable\s*=\s*\$true/.test(xMarkSetup)) {
+            out('FAIL', 'mcode-island.ps1: the dismiss mark is not focusable -- Tab cannot reach it');
+        } else if (!/Invoke-SessionDismiss/.test(xMarkKey)) {
+            out('FAIL', 'mcode-island.ps1: the keyboard handler does not dismiss the row');
+        } else if (!/'Return'/.test(xMarkKey) || !/'Enter'/.test(xMarkKey)) {
+            out('FAIL', 'mcode-island.ps1: the keyboard handler ignores the Enter key -- WPF calls the main one Return, the keypad one Enter');
+        } else if (!/'Space'/.test(xMarkKey)) {
+            out('FAIL', 'mcode-island.ps1: the keyboard handler ignores Space');
+        } else {
+            out('PASS', 'mcode-island.ps1: the dismiss mark is focusable and Enter/Space dismiss the row');
+        }
+
+        // The dismiss path itself must not switch sessions: it only writes
+        // the ack, records the pending dismissal and redraws.
+        const dismissBody = (widget.match(/function Invoke-SessionDismiss[\s\S]*?\n\}\n/) || [''])[0];
+        if (!dismissBody) {
+            out('FAIL', 'mcode-island.ps1: Invoke-SessionDismiss not found');
+        } else {
+            const dismissCode = dismissBody.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n');
+            if (/Invoke-SessionClick|Select-SessionTerminal|Switch-ToAppConversation|Activate-/.test(dismissCode)) {                out('FAIL', 'mcode-island.ps1: Invoke-SessionDismiss switches to the session -- dismissing must not move the user');
+            } else if (!/Write-AckSignal/.test(dismissCode)) {
+                out('FAIL', 'mcode-island.ps1: Invoke-SessionDismiss does not write the ack -- the row would come back');
+            } else if (!/\$id\s+-notmatch\s+'/.test(dismissCode)) {
+                out('FAIL', 'mcode-island.ps1: Invoke-SessionDismiss does not validate the session id');
+            } else {
+                out('PASS', 'mcode-island.ps1: Invoke-SessionDismiss only acks the row (no switch, id validated)');
+            }
+        }
+
+        // The focus has to go back to where it was.
+        //
+        // Pressing the mouse button hands focus to the pressed window -- the
+        // pill. For "jump to that session" that is fine (it jumps anyway).
+        // For "just dismiss it" it is the opposite of the intent: the user
+        // asked not to be interrupted, and losing the editor's focus means
+        // the next keystroke goes somewhere unknown.
+        //
+        // So the foreground has to be captured before the click (on
+        // MouseEnter) and handed back afterwards.
+        if (!/function\s+Save-ForegroundBeforeAction\b/.test(widget)) {
+            out('FAIL', 'mcode-island.ps1: no Save-ForegroundBeforeAction -- the pill keeps the focus it stole');
+        } else if (!/function\s+Restore-ForegroundAfterAction\b/.test(widget)) {
+            out('FAIL', 'mcode-island.ps1: no Restore-ForegroundAfterAction -- the pill keeps the focus it stole');
+        } else if (!/Restore-ForegroundAfterAction/.test(dismissBody)) {
+            out('FAIL', 'mcode-island.ps1: Invoke-SessionDismiss does not give the focus back');
+        } else {
+            out('PASS', 'mcode-island.ps1: dismissing gives the focus back to where it was');
+        }
+        // The capture has to happen on MouseEnter: by MouseDown the pill
+        // already owns the focus, and there would be nothing to give back.
+        const mouseEnterBlock = (widget.match(/\$window\.Add_MouseEnter\(\{[\s\S]*?\}\)/) || [''])[0];
+        if (!mouseEnterBlock) {
+            out('FAIL', 'mcode-island.ps1: no window MouseEnter handler -- the foreground cannot be captured before the click');
+        } else if (!/Save-ForegroundBeforeAction/.test(mouseEnterBlock)) {
+            out('FAIL', 'mcode-island.ps1: MouseEnter does not capture the foreground -- by click time the pill already owns it');
+        } else {
+            out('PASS', 'mcode-island.ps1: the foreground is captured on MouseEnter, before any click');
+        }
+
+        // The ack file has to carry more than one id. The dismiss button
+        // makes dismissing several rows in a row a normal thing to do, and
+        // the detector consumes the file once a second -- a single-id file
+        // loses every dismiss but the last one.
+        if (!/function\s+Write-AckSignal\b/.test(widget)) {
+            out('FAIL', 'mcode-island.ps1: no Write-AckSignal -- the ack path is still the single-id one');
+        } else {
+            out('PASS', 'mcode-island.ps1: the ack is written through Write-AckSignal');
+        }
+        const trackerSrc = await readFile(join(PLUGIN_ROOT, 'scripts', 'lib', 'Session-Tracker.ps1'), 'utf8');
+        // (k3) sessions.json has a byte budget, not just a row budget.
+        //
+        // The row cap bounds how many sessions are tracked; it does not bound
+        // the file, because every row also carries its title history and the
+        // dismissed map has no cap at all. The write path has to measure the
+        // serialized bytes and drop the oldest rows until it fits.
+        const byteCap = trackerSrc.match(/\$script:MAX_SESSIONS_JSON_BYTES\s*=\s*(\d+)/);
+        const writeBody = (trackerSrc.match(/function\s+Write-SessionsFile[\s\S]*?\n\}\n/) || [''])[0];
+        const limitBody = (trackerSrc.match(/function\s+Limit-SessionsJson[\s\S]*?\n\}\n/) || [''])[0];
+        if (!byteCap) {
+            out('FAIL', 'scripts/lib/Session-Tracker.ps1: no $script:MAX_SESSIONS_JSON_BYTES -- the sessions.json file size is unbounded');
+        } else if (+byteCap[1] < 4096 || +byteCap[1] > 1048576) {
+            out('FAIL', `scripts/lib/Session-Tracker.ps1: $script:MAX_SESSIONS_JSON_BYTES = ${byteCap[1]} is outside 4KB..1MB`);
+        } else if (!writeBody) {
+            out('FAIL', 'scripts/lib/Session-Tracker.ps1: Write-SessionsFile body not found');
+        } else if (!/\$json\s*=\s*Limit-SessionsJson\b/.test(writeBody)) {
+            out('FAIL', 'scripts/lib/Session-Tracker.ps1: Write-SessionsFile does not apply the byte cap -- the file grows with the title history');
+        } else if (!limitBody) {
+            out('FAIL', 'scripts/lib/Session-Tracker.ps1: Limit-SessionsJson body not found');
+        } else if (!/GetByteCount/.test(limitBody)) {
+            out('FAIL', 'scripts/lib/Session-Tracker.ps1: Limit-SessionsJson does not measure the bytes -- it cannot enforce a byte budget');
+        } else {
+            out('PASS', 'scripts/lib/Session-Tracker.ps1: sessions.json is capped in bytes at the write path');
+        }
+        const ackBody = (trackerSrc.match(/function\s+Read-AckSignal[\s\S]*?\n\}\n/) || [''])[0];
+        if (!ackBody) {
+            out('FAIL', 'scripts/lib/Session-Tracker.ps1: Read-AckSignal body not found');
+        } else if (!/-split\s+"`r\?`n"/.test(ackBody)) {
+            out('FAIL', 'scripts/lib/Session-Tracker.ps1: Read-AckSignal reads one id -- dismissing several rows in a second would lose all but the last');
+        } else if (!/Move-Item[\s\S]*ackFile[\s\S]*taken/.test(ackBody)) {
+            out('FAIL', 'scripts/lib/Session-Tracker.ps1: Read-AckSignal does not take the file by rename -- an ack written while it reads would be lost');
+        } else {
+            out('PASS', 'scripts/lib/Session-Tracker.ps1: the ack carries many ids and is taken by rename');
         }
         // The UIA lookup has to filter by name. Reading every element of the
         // app's tree costs ~500ms, and the click handler runs on the UI
@@ -633,6 +858,37 @@ const main = async () => {
             out('FAIL', 'mcode-island.ps1: the app conversation lookup does not filter by name -- scanning the whole tree blocks the UI thread');
         } else {
             out('PASS', 'mcode-island.ps1: the app conversation lookup filters by name (no full-tree scan)');
+        }
+
+        // (k2) The list has a height budget, not just a data budget.
+        //
+        // The detector caps the data side ($script:MAX_SESSIONS), but 20 rows
+        // at ~48px is taller than the work area on most screens: the bottom
+        // of the list runs off the screen and still covers the windows
+        // underneath. Three locks: a sane row cap, the overflow notice
+        // (silent truncation would claim nothing else is running -- the exact
+        // question this list exists to answer), and the work-area clamp.
+        const listBody = (widget.match(/function Show-SessionList[\s\S]*?\n\}\n/) || [''])[0];
+        const rowCap = widget.match(/\$script:MAX_SESSION_ROWS\s*=\s*(\d+)/);
+        if (!listBody) {
+            out('FAIL', 'mcode-island.ps1: Show-SessionList body not found (height-cap drift lock skipped)');
+        } else if (!rowCap) {
+            out('FAIL', 'mcode-island.ps1: no $script:MAX_SESSION_ROWS -- the session list height is unbounded');
+        } else if (+rowCap[1] < 6 || +rowCap[1] > 20) {
+            out('FAIL', `mcode-island.ps1: $script:MAX_SESSION_ROWS = ${rowCap[1]} is outside 6..20 -- too small hides work, too large runs off the screen`);
+        } else if (!/Select-Object -First \$script:MAX_SESSION_ROWS/.test(listBody)) {
+            out('FAIL', 'mcode-island.ps1: Show-SessionList does not slice the rows by $script:MAX_SESSION_ROWS');
+        } else if (!/if\s*\(\s*\$hidden\s*-gt\s*0\s*\)\s*\{\s*Add-SessionOverflowRow\s+\$hidden\s*\}/.test(listBody)) {
+            out('FAIL', 'mcode-island.ps1: rows beyond the cap vanish without the "还有 N 条" notice (or the notice is not gated on $hidden)');
+        } else {
+            out('PASS', `mcode-island.ps1: the list is capped at ${rowCap[1]} rows and says how many are hidden`);
+        }
+        if (!listBody) {
+            // already reported above
+        } else if (!/GetWorkAreaForWindow/.test(listBody) || !/\$window\.Height\s*=/.test(listBody)) {
+            out('FAIL', 'mcode-island.ps1: the list height is not clamped to the work area -- it can end up taller than the screen');
+        } else {
+            out('PASS', 'mcode-island.ps1: the list height is clamped to the work area');
         }
 
         // (l) The click must be scoped to the sidebar's conversation list.
@@ -1910,6 +2166,678 @@ const main = async () => {
     }
     if (swpHits === 0) {
         out('PASS', `ps1 SetWindowPos guard: no call resizes or moves its target without SWP_NOSIZE / SWP_NOMOVE (${ps1Files.length} scanned)`);
+    }
+
+    // ==== 6. Liquid Glass 材质引擎 =====================================
+    //
+    // 守的是 Apple HIG "Materials" 的两条硬规矩：
+    //   1. 材质没有固有颜色 —— 颜色来自它背后的内容；
+    //   2. regular 变体要"按需调整背景明度，以保证文字可读"。
+    //
+    // 第 2 条不能靠"看着对"来保证：真机上确实出现过背后是白纸时次级文字
+    // 对比度掉到 2.7:1、"3h25m 99%"几乎看不见的情况。所以这一节把源码里
+    // 的材质参数**读出来**，按最坏背景复算前景/背景的 WCAG 对比度：参数读
+    // 不出来、或者算出来不达标，就 FAIL。改一行材质参数，对应的断言打红。
+    {
+        const widgetPath = join(PLUGIN_ROOT, 'mcode-island.ps1');
+        if (!(await exists(widgetPath))) {
+            out('FAIL', 'mcode-island.ps1 missing (Liquid Glass material checks skipped)');
+        } else {
+            const src = await readFile(widgetPath, 'utf8');
+            // 注释会喂绿断言：文本匹配类检查必须先剥掉注释行。
+            const psCode = src.split(/\r?\n/).filter((l) => !/^\s*#/.test(l)).join('\n');
+            // XAML 里的 XML 注释同理（材质层的说明都写在注释里）。
+            const xamlMatch = src.match(/\$xaml\s*=\s*@'\r?\n([\s\S]*?)\r?\n'@/);
+            const xamlRaw = xamlMatch ? xamlMatch[1] : '';
+            if (!xamlMatch) {
+                out('FAIL', 'xaml read: the XAML block could not be read -- the material assertions would run against nothing');
+            } else if (!xmlCommentsArePaired(xamlRaw)) {
+                out('FAIL', 'xaml comments: an XML comment in the XAML is never closed -- the assertions below would be reading a half-deleted source');
+            } else {
+                out('PASS', 'xaml comments: every XML comment in the XAML is closed');
+            }
+            const xaml = stripXmlComments(xamlRaw);
+            if (!/<!--|--!?>/.test(xaml)) {
+                out('PASS', 'xaml comments: the stripped XAML carries no comment marker');
+            } else {
+                out('FAIL', 'xaml comments: a comment marker survived the strip -- a comment in the source can feed the material assertions');
+            }
+            // The strip has to know BOTH comment end tags. A probe is the
+            // only way to prove it: the widget's own XAML never uses "--!>",
+            // so without a probe a strip that only knew "-->" would look
+            // perfect here.
+            const probe = '<a><!-- c --!><b>keep</b>';
+            if (stripXmlComments(probe) === '<a><b>keep</b>') {
+                out('PASS', 'xaml comments: the strip recognises every HTML comment end tag');
+            } else {
+                out('FAIL', 'xaml comments: the strip does not recognise every HTML comment end tag -- "--!>" closes a comment too');
+            }
+
+            const numOf = (name) => {
+                const m = psCode.match(new RegExp('\\$script:' + name + '\\s*=\\s*([0-9.]+)'));
+                return m ? parseFloat(m[1]) : null;
+            };
+            const needNum = (name) => {
+                const v = numOf(name);
+                if (v === null) {
+                    out('FAIL', `mcode-island.ps1: $script:${name} is missing or not a plain number -- the material contract cannot be verified`);
+                    return null;
+                }
+                return v;
+            };
+
+            // --- 6.1 材质没有固有颜色 -----------------------------------
+            // HIG "Color": "Liquid Glass has no inherent color, and instead
+            // takes on colors from the content directly behind it".
+            //
+            // 旧实现是画上去的半透明深蓝灰（#99232734 那一套）。那不是玻璃，
+            // 是"一块染了色的矩形"。所以那三个色值必须消失，而且玻璃的底色
+            // 必须由运行时抓屏刷上去。
+            const legacyTints = ['#99232734', '#7312161C', '#851A1E28'];
+            const legacyHits = legacyTints.filter((h) => src.toUpperCase().includes(h.toUpperCase()));
+            if (legacyHits.length === 0) {
+                out('PASS', 'glass material: the legacy hardcoded tint colours are gone (the material takes its colour from what is behind it)');
+            } else {
+                out('FAIL', `glass material: still carries the legacy hardcoded tint ${legacyHits.join(', ')} -- a tinted plate is not glass`);
+            }
+            if (/Background\s*=\s*\$pillCap\.Brush/.test(psCode) && /Background\s*=\s*\$panelCap\.Brush/.test(psCode)) {
+                out('PASS', 'glass material: both glass surfaces are filled from the captured backdrop at runtime');
+            } else {
+                out('FAIL', 'glass material: the glass surfaces are not filled from the captured backdrop (the material would keep a fixed colour)');
+            }
+
+            // --- 6.2 抓屏必须把自己排除掉 -------------------------------
+            // 不排除的话抓到的是自己的上一帧：模糊之后是一团脏影子，而不是
+            // 身后的桌面。实测排除前采样点全是窗口自己的颜色。
+            if (/SetWindowDisplayAffinity\(\$hwnd,\s*0x00000011\)/.test(psCode)) {
+                out('PASS', 'glass capture: the widget excludes itself from the screen grab (WDA_EXCLUDEFROMCAPTURE)');
+            } else {
+                out('FAIL', 'glass capture: the widget does not exclude itself from the screen grab -- it would blur its own previous frame');
+            }
+
+            // --- 6.3 离屏渲染必须先 Measure + Arrange -------------------
+            // RenderTargetBitmap.Render() 只画"已经摆好"的视觉对象。离屏的
+            // Image 从没被排过版，Render 出来就是一张全黑：实测同一张图，不
+            // 排版亮度 0.0，排版后 0.35。
+            const mIdx = psCode.indexOf('$img.Measure(');
+            const aIdx = psCode.indexOf('$img.Arrange(');
+            const rIdx = psCode.indexOf('$rtb.Render($img)');
+            if (mIdx >= 0 && aIdx > mIdx && rIdx > aIdx) {
+                out('PASS', 'glass capture: the offscreen image is measured and arranged before it is rendered (otherwise it renders black)');
+            } else {
+                out('FAIL', 'glass capture: the offscreen image is rendered without a prior Measure/Arrange -- the blurred backdrop would come out black');
+            }
+
+            // --- 6.4 形状用 Clip，不是 CornerRadius ---------------------
+            // Border 的 CornerRadius 不裁剪子元素，光靠它画出来是方的。
+            if (/\$glass\.Clip\s*=\s*\$geo/.test(psCode) && /function New-RoundedRectGeometry/.test(psCode)) {
+                out('PASS', 'glass shape: the material is clipped by a real rounded path (Border.CornerRadius would not clip the layers)');
+            } else {
+                out('FAIL', 'glass shape: the glass surface is not clipped by a rounded path (the corners render square)');
+            }
+            // 面板要走苹果的"连续圆角"（超椭圆），药丸是正圆弧的胶囊。
+            if (/New-RoundedRectGeometry\s+\$w\s+\$h\s+\$Radius\s+\$Smooth\s+0/.test(psCode)
+                && /New-RoundedRectGeometry\s+\$w\s+\$h\s+\$Radius\s+\$Smooth\s+1\.25/.test(psCode)) {
+                out('PASS', 'glass shape: the rim and the edge strokes are inset paths of the same rounded geometry');
+            } else {
+                out('FAIL', 'glass shape: the rim/edge strokes are not inset paths of the glass geometry (they would not follow the corner radius)');
+            }
+
+            // --- 6.5 模糊半径按物理像素折算 -----------------------------
+            // 降采样 1/4 再模糊，Radius 必须按折算后的尺度给。写死 9 的话，
+            // 70px 高的药丸（缩小后只有 17px）会被抹成一块纯色板。
+            const sd = psCode.match(/\$scaleDown\s*=\s*([0-9.]+)/);
+            const br = psCode.match(/\$blur\.Radius\s*=\s*([0-9.]+)/);
+            if (sd && br) {
+                const phys = parseFloat(sd[1]) * parseFloat(br[1]);
+                if (phys >= 16 && phys <= 48) {
+                    out('PASS', `glass blur: the blur radius is scaled for physical pixels (${sd[1]}x downscale x ${br[1]} = ${phys}px)`);
+                } else {
+                    out('FAIL', `glass blur: the effective blur is ${phys}px (${sd[1]}x downscale x ${br[1]}) -- outside the 16..48px band that reads as frosted glass`);
+                }
+            } else {
+                out('FAIL', 'glass blur: $scaleDown / $blur.Radius not found (the blur scale cannot be verified)');
+            }
+
+            // --- 6.6 颗粒要克制 -----------------------------------------
+            if (/Opacity\s*=\s*0\.0[0-2]/.test(psCode)) {
+                out('PASS', 'glass grain: the grain layer stays below 3% opacity (it is a surface frost, not a texture)');
+            } else {
+                out('FAIL', 'glass grain: the grain opacity is not a small value (a visible speckle destroys the frosted look)');
+            }
+
+            // --- 6.7 两极的前景色 / 状态色 / 家族色表 --------------------
+            const inkOf = (name) => {
+                const m = psCode.match(new RegExp('\\$script:' + name + '\\s*=\\s*@\\{([\\s\\S]*?)\\n\\}'));
+                const out = {};
+                if (!m) return out;
+                const re = /[ \t]*([A-Za-z]+)[ \t]*=[ \t]*'(#[0-9A-Fa-f]{8})'/g;
+                let mm;
+                while ((mm = re.exec(m[1])) !== null) out[mm[1]] = mm[2];
+                return out;
+            };
+            const inkDark = inkOf('glassInkDark');
+            const inkLight = inkOf('glassInkLight');
+            if (Object.keys(inkDark).length >= 8 && Object.keys(inkLight).length >= 8) {
+                out('PASS', `glass ink: both poles define a full foreground palette (dark ${Object.keys(inkDark).length}, light ${Object.keys(inkLight).length} entries)`);
+            } else {
+                out('FAIL', `glass ink: the foreground palettes are incomplete (dark ${Object.keys(inkDark).length}, light ${Object.keys(inkLight).length} entries; need >= 8 each)`);
+            }
+            // 两套色表的键必须一样 —— 少一个键就是某个字在浅色极上没人管。
+            const inkKeys = Object.keys(inkDark).sort().join(',');
+            const inkKeysLight = Object.keys(inkLight).sort().join(',');
+            if (inkKeys && inkKeys === inkKeysLight) {
+                out('PASS', 'glass ink: the two poles expose the same foreground roles');
+            } else {
+                out('FAIL', 'glass ink: the two poles expose different foreground roles (a control would keep the wrong colour on one pole)');
+            }
+
+            // 状态色表 / 家族色表也要成对，且键集一致。
+            const mapKeys = (srcText, varName) => {
+                const m = srcText.match(new RegExp('\\$' + varName + '\\s*=\\s*@\\{([\\s\\S]*?)\\n\\}'));
+                if (!m) return null;
+                const keys = [];
+                const re = /^[ \t]*([A-Za-z][A-Za-z0-9]*)[ \t]*=/gm;
+                let mm;
+                while ((mm = re.exec(m[1])) !== null) keys.push(mm[1]);
+                return keys;
+            };
+            const stateDark = mapKeys(psCode, 'stateMap');
+            const stateLight = mapKeys(psCode, 'stateMapLight');
+            const famDark = mapKeys(psCode, 'familyMap');
+            const famLight = mapKeys(psCode, 'familyMapLight');
+            if (stateDark && stateLight && stateDark.slice().sort().join(',') === stateLight.slice().sort().join(',')) {
+                out('PASS', 'glass colour maps: the state table has a light-pole twin with the same states');
+            } else {
+                out('FAIL', 'glass colour maps: the state table and its light-pole twin cover different states');
+            }
+            if (famDark && famLight && famDark.slice().sort().join(',') === famLight.slice().sort().join(',')) {
+                out('PASS', 'glass colour maps: the family table has a light-pole twin with the same families');
+            } else {
+                out('FAIL', 'glass colour maps: the family table and its light-pole twin cover different families');
+            }
+            // 家族色两两之间要分得开（CIE76 dE），两极都要查。
+            const deltaE = (hexA, hexB) => {
+                const toLab = (hex) => {
+                    const ch = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+                    const lin = ch.map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+                    const [r, g, b] = lin;
+                    const X = (0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / 0.95047;
+                    const Y = (0.2126729 * r + 0.7151522 * g + 0.0721750 * b);
+                    const Z = (0.0193339 * r + 0.1191920 * g + 0.9503041 * b) / 1.08883;
+                    const f = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+                    const [fx, fy, fz] = [f(X), f(Y), f(Z)];
+                    return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+                };
+                const la = toLab(hexA), lb = toLab(hexB);
+                return Math.sqrt((la[0] - lb[0]) ** 2 + (la[1] - lb[1]) ** 2 + (la[2] - lb[2]) ** 2);
+            };
+            const famBlockOf = (srcText, varName) => {
+                const m = srcText.match(new RegExp('\\$' + varName + '\\s*=\\s*@\\{([\\s\\S]*?)\\n\\}'));
+                return m ? m[1] : '';
+            };
+            const famHexes = (block) => {
+                const map = new Map();
+                const re = /[ \t]*([a-z]+)[ \t]*=[ \t]*'(#[0-9A-Fa-f]{8})'/g;
+                let mm;
+                while ((mm = re.exec(block)) !== null) map.set(mm[1], mm[2].slice(3).toUpperCase());
+                return map;
+            };
+            const sepCheck = (label, block) => {
+                const colors = famHexes(block);
+                if (colors.size < 7) {
+                    out('FAIL', `glass colour maps: ${label} parses only ${colors.size}/7 family colours -- the separation check below would be vacuous`);
+                    return;
+                }
+                let worst = Infinity, worstPair = '';
+                const entries = [...colors.entries()];
+                for (let i = 0; i < entries.length; i++) {
+                    for (let j = i + 1; j < entries.length; j++) {
+                        const d = deltaE(entries[i][1], entries[j][1]);
+                        if (d < worst) { worst = d; worstPair = `${entries[i][0]}/${entries[j][0]}`; }
+                    }
+                }
+                if (worst >= 20) {
+                    out('PASS', `glass colour maps: ${label} family colours are all separable (closest pair ${worstPair} dE ${worst.toFixed(1)} >= 20)`);
+                } else {
+                    out('FAIL', `glass colour maps: ${label} family colours ${worstPair} are only dE ${worst.toFixed(1)} apart -- they read as the same colour on the pill`);
+                }
+            };
+            sepCheck('dark pole', famBlockOf(psCode, 'familyMap'));
+            sepCheck('light pole', famBlockOf(psCode, 'familyMapLight'));
+
+            // --- 6.8 换极阈值 + 对比度保证 ------------------------------
+            //
+            // 这里是这一节的核心：把源码里的材质参数读出来，按**最坏背景**
+            // 复算前景/背景的对比度。
+            //
+            // 模型跟代码一一对应：
+            //   - 玻璃的底色 = 背后屏幕的模糊图（L 是它的加权亮度）。
+            //   - 染色层是渐变色标：暗色极有"暗背景/亮背景"两套，浅色极一套。
+            //   - 标题行落在渐变偏移 0.25 附近，正文行落在 0.55 附近
+            //     （药丸高 70，内容上边距 6，标题行高约 22）。
+            //   - 前景色是带透明度的墨色，合成到玻璃上再算 WCAG 对比度。
+            const P = {
+                lightOn: needNum('glassPoleLightOn'),
+                lightOff: needNum('glassPoleLightOff'),
+                targetDark: needNum('glassTargetByteDark'),
+                targetLight: needNum('glassTargetByteLight'),
+                thickDark: needNum('glassThickDark'),
+                thickLight: needNum('glassThickLight'),
+            };
+            const allNum = Object.values(P).every((v) => v !== null);
+            if (!allNum) {
+                out('FAIL', 'glass contrast: the material constants are incomplete -- the legibility guarantee cannot be verified');
+            } else {
+                // 迟滞：两个阈值必须分得开，否则背景亮度在阈值附近抖一下，
+                // 药丸就跟着闪一下。
+                if (P.lightOn > P.lightOff) {
+                    out('PASS', `glass pole: the light/dark switch is hysteretic (on at ${P.lightOn}, back at ${P.lightOff})`);
+                } else {
+                    out('FAIL', `glass pole: the light switch (${P.lightOn}) is not above the dark switch (${P.lightOff}) -- the material would flicker`);
+                }
+
+                // 渐变色标：只取染色层（$tintBrush）上的那些，边缘高光和
+                // 厚度暗边用的是同一套 New-GlassStop，按颜色过滤掉。
+                const tintStops = (block) => {
+                    const stops = [];
+                    for (const line of block.split(/\r?\n/)) {
+                        if (!/\$tintBrush\.GradientStops\.Add\(/.test(line)) continue;
+                        const m = line.match(/New-GlassStop\s+\$(white|dark)\s+([0-9.]+)\s+\(([^)]*)\)/);
+                        if (!m) continue;
+                        const expr = m[3].trim();
+                        let factor = null, lit = null, over = null;
+                        const vm = expr.match(/^\$veil\s*\*\s*([0-9.]+)$/);
+                        const vb = expr.match(/^\$veil$/);
+                        const lm = expr.match(/^\$lift\s*\*\s*([0-9.]+)$/);
+                        const lb = expr.match(/^\$lift$/);
+                        const pm = expr.match(/^([0-9.]+)$/);
+                        if (vm) { factor = parseFloat(vm[1]); over = 'veil'; }
+                        else if (vb) { factor = 1; over = 'veil'; }
+                        else if (lm) { factor = parseFloat(lm[1]); over = 'lift'; }
+                        else if (lb) { factor = 1; over = 'lift'; }
+                        else if (pm) { lit = parseFloat(pm[1]); }
+                        stops.push({ kind: m[1], offset: parseFloat(m[2]), factor, lit, over });
+                    }
+                    return stops;
+                };
+                // 两套渐变：背后比目标亮（混黑）/ 比目标暗（混白）。两极共用，
+                // 差的只是目标灰度。
+                // 锚点只能用代码：psCode 已经把注释行剥掉了（注释会喂绿断言）。
+                const veilBranch = psCode.indexOf('if ($veil -gt 0.0) {');
+                const veilElse = veilBranch < 0 ? -1 : psCode.indexOf('\n    } else {', veilBranch);
+                const tintAfter = veilElse < 0 ? -1 : psCode.indexOf('$tintPath = $window.FindName', veilElse);
+                const stopsBlack = veilBranch < 0 || veilElse < 0 ? [] : tintStops(psCode.slice(veilBranch, veilElse));
+                const stopsWhite = veilElse < 0 || tintAfter < 0 ? [] : tintStops(psCode.slice(veilElse, tintAfter));
+                if (stopsBlack.length >= 4 && stopsWhite.length >= 4) {
+                    out('PASS', `glass tint: the two tint gradients are readable (washed-black ${stopsBlack.length}, washed-white ${stopsWhite.length} stops)`);
+                } else {
+                    out('FAIL', 'glass tint: the tint gradients could not be parsed -- the contrast model would be vacuous');
+                }
+
+                // 玻璃在某个渐变偏移上的实际颜色。
+                const glassAt = (stops, offset, veil, lift, backdrop) => {
+                    if (!stops.length) return backdrop;
+                    const sorted = [...stops].sort((a, b) => a.offset - b.offset);
+                    let s1 = sorted[0], s2 = sorted[sorted.length - 1];
+                    for (let i = 0; i < sorted.length - 1; i++) {
+                        if (offset >= sorted[i].offset && offset <= sorted[i + 1].offset) {
+                            s1 = sorted[i]; s2 = sorted[i + 1];
+                            break;
+                        }
+                    }
+                    const span = s2.offset - s1.offset;
+                    const t = span > 0 ? Math.max(0, Math.min(1, (offset - s1.offset) / span)) : 0;
+                    const alphaOf = (s) => {
+                        if (s.lit !== null) return s.lit;
+                        if (s.factor === null) return 0;
+                        if (s.over === 'lift') return s.factor * lift;
+                        return s.factor * veil;
+                    };
+                    const a1 = alphaOf(s1), a2 = alphaOf(s2);
+                    const a = a1 + (a2 - a1) * t;
+                    const c1 = s1.kind === 'white' ? 255 : 0;
+                    const c2 = s2.kind === 'white' ? 255 : 0;
+                    const c = c1 + (c2 - c1) * t;
+                    return backdrop * (1 - a) + c * a;
+                };
+                // 收敛模型：先定目标灰度，再反推要混多少。
+                //   背后比目标亮 -> 混黑 veil = 1 - target / L
+                //   背后比目标暗 -> 混白 lift = (target - L) / (1 - L)
+                // 混完之后玻璃落在目标灰度上，跟背后是什么无关。
+                const mixOf = (L, target) => (L > target
+                    ? { veil: 1 - target / L, lift: 0 }
+                    : { veil: 0, lift: (target - L) / (1 - L) });
+                // sRGB -> WCAG
+                const lin = (c) => { c /= 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+                const lum = (rgb) => 0.2126 * lin(rgb[0]) + 0.7152 * lin(rgb[1]) + 0.0722 * lin(rgb[2]);
+                const ratio = (a, b) => {
+                    const la = lum(a), lb = lum(b);
+                    const hi = Math.max(la, lb), lo = Math.min(la, lb);
+                    return (hi + 0.05) / (lo + 0.05);
+                };
+                const inkRgb = (hex8) => {
+                    const a = parseInt(hex8.slice(1, 3), 16) / 255;
+                    return { a, rgb: [parseInt(hex8.slice(3, 5), 16), parseInt(hex8.slice(5, 7), 16), parseInt(hex8.slice(7, 9), 16)] };
+                };
+                const over = (fg, bg) => fg.rgb.map((c, i) => fg.a * c + (1 - fg.a) * bg);
+
+                const TITLE_OFF = 0.25;   // 标题行在药丸里的纵向位置
+                const BODY_OFF = 0.55;    // 正文行
+                const worst = { darkPrimary: Infinity, darkSecondary: Infinity, lightPrimary: Infinity, lightSecondary: Infinity };
+                for (let i = 0; i <= 600; i++) {
+                    const L = i / 600;
+                    const backdrop = 255 * L;
+                    // 深色极：玻璃收敛到目标灰度，不管背后是白纸还是黑终端。
+                    {
+                        const m = mixOf(L, P.targetDark);
+                        const stops = m.veil > 0 ? stopsBlack : stopsWhite;
+                        const gTitle = glassAt(stops, TITLE_OFF, m.veil, m.lift, backdrop);
+                        const gBody = glassAt(stops, BODY_OFF, m.veil, m.lift, backdrop);
+                        const p = ratio(over(inkRgb(inkDark.Primary), gTitle), [gTitle, gTitle, gTitle]);
+                        const s = Math.min(
+                            ratio(over(inkRgb(inkDark.Secondary), gTitle), [gTitle, gTitle, gTitle]),
+                            ratio(over(inkRgb(inkDark.Secondary), gBody), [gBody, gBody, gBody]),
+                        );
+                        if (p < worst.darkPrimary) worst.darkPrimary = p;
+                        if (s < worst.darkSecondary) worst.darkSecondary = s;
+                    }
+                    // 浅色极：同一个模型，目标灰度换成浅的那档。
+                    {
+                        const m = mixOf(L, P.targetLight);
+                        const stops = m.veil > 0 ? stopsBlack : stopsWhite;
+                        const gTitle = glassAt(stops, TITLE_OFF, m.veil, m.lift, backdrop);
+                        const gBody = glassAt(stops, BODY_OFF, m.veil, m.lift, backdrop);
+                        const p = ratio(over(inkRgb(inkLight.Primary), gTitle), [gTitle, gTitle, gTitle]);
+                        const s = Math.min(
+                            ratio(over(inkRgb(inkLight.Secondary), gTitle), [gTitle, gTitle, gTitle]),
+                            ratio(over(inkRgb(inkLight.Secondary), gBody), [gBody, gBody, gBody]),
+                        );
+                        if (p < worst.lightPrimary) worst.lightPrimary = p;
+                        if (s < worst.lightSecondary) worst.lightSecondary = s;
+                    }
+                }
+                // 主文字：HIG 说 regular 变体要"maintain legibility of text"，
+                // 4.5:1 是 WCAG AA 对正文的要求，这里按主文字执行。
+                // 次级文字：Apple 自己在半透明材质上就是 2.7~3.4 这一档
+                // （secondaryLabel 压在非纯白底上就是这个数），所以门槛取
+                // 2.5：再低就真的看不见了。
+                const PRIMARY_MIN = 4.5;
+                const SECONDARY_MIN = 2.5;
+                if (worst.darkPrimary >= PRIMARY_MIN) {
+                    out('PASS', `glass contrast: the dark pole keeps the primary text at ${worst.darkPrimary.toFixed(2)}:1 over the worst backdrop (>= ${PRIMARY_MIN}:1)`);
+                } else {
+                    out('FAIL', `glass contrast: the dark pole drops the primary text to ${worst.darkPrimary.toFixed(2)}:1 over the worst backdrop (needs ${PRIMARY_MIN}:1)`);
+                }
+                if (worst.lightPrimary >= PRIMARY_MIN) {
+                    out('PASS', `glass contrast: the light pole keeps the primary text at ${worst.lightPrimary.toFixed(2)}:1 over the worst backdrop (>= ${PRIMARY_MIN}:1)`);
+                } else {
+                    out('FAIL', `glass contrast: the light pole drops the primary text to ${worst.lightPrimary.toFixed(2)}:1 over the worst backdrop (needs ${PRIMARY_MIN}:1)`);
+                }
+                if (worst.darkSecondary >= SECONDARY_MIN) {
+                    out('PASS', `glass contrast: the dark pole keeps the secondary text at ${worst.darkSecondary.toFixed(2)}:1 over the worst backdrop (>= ${SECONDARY_MIN}:1)`);
+                } else {
+                    out('FAIL', `glass contrast: the dark pole drops the secondary text to ${worst.darkSecondary.toFixed(2)}:1 over the worst backdrop (needs ${SECONDARY_MIN}:1)`);
+                }
+                if (worst.lightSecondary >= SECONDARY_MIN) {
+                    out('PASS', `glass contrast: the light pole keeps the secondary text at ${worst.lightSecondary.toFixed(2)}:1 over the worst backdrop (>= ${SECONDARY_MIN}:1)`);
+                } else {
+                    out('FAIL', `glass contrast: the light pole drops the secondary text to ${worst.lightSecondary.toFixed(2)}:1 over the worst backdrop (needs ${SECONDARY_MIN}:1)`);
+                }
+            }
+
+            // --- 6.9 大元素 = 更厚的材质 --------------------------------
+            // HIG "Materials": "Liquid Glass appears more opaque in larger
+            // elements". 面板比药丸大得多，再透就成了一块挡板的玻璃。
+            //
+            // 两极各有一处 Thick 分支，都要检查：只要有一极的系数掉到 1
+            // 以下，那一极的面板就比药丸还透，玻璃的厚度感就没了。
+            // 新模型里"更厚"不是把染色系数调大，而是把**目标灰度**推得更靠近
+            // 材料自己的颜色：深色极更黑，浅色极更白。
+            const thickDarkOk = /\$target\s*=\s*\$target\s*\*\s*\(1\.0\s*-\s*\$thickMix\)/.test(psCode);
+            const thickLightOk = /\$target\s*=\s*\$target\s*\+\s*\(1\.0\s*-\s*\$target\)\s*\*\s*\$thickMix/.test(psCode);
+            const thickOk = thickDarkOk && thickLightOk && P.thickDark > 0 && P.thickLight > 0;
+            if (thickOk) {
+                out('PASS', `glass depth: the panel is thicker than the pill in both poles (dark ${P.thickDark}, light ${P.thickLight})`);
+            } else {
+                out('FAIL', `glass depth: the panel is not thicker than the pill (dark branch ${thickDarkOk}, light branch ${thickLightOk}) -- the large element would stay as transparent as the pill`);
+            }
+
+            // --- 6.10 XAML 里不能有硬编码的材质色 ----------------------
+            // 材质层在 XAML 里只能是占位（Transparent），颜色一律运行时刷。
+            const materialPaths = ['PillTint', 'PillGrain', 'PillRim', 'PillEdge', 'PanelTint', 'PanelGrain', 'PanelRim', 'PanelEdge'];
+            const badMaterial = [];
+            for (const name of materialPaths) {
+                const re = new RegExp('x:Name="' + name + '"[^>]*');
+                const m = xaml.match(re);
+                if (!m) { badMaterial.push(`${name}:missing`); continue; }
+                const tag = m[0];
+                if (!/Fill="Transparent"/.test(tag) || !/Stroke="Transparent"/.test(tag)) badMaterial.push(name);
+            }
+            if (badMaterial.length === 0) {
+                out('PASS', `glass layers: all ${materialPaths.length} material layers start uncoloured and are painted at runtime`);
+            } else {
+                out('FAIL', `glass layers: ${badMaterial.join(', ')} carry a baked-in colour instead of being painted at runtime`);
+            }
+
+            // --- 6.10b 材质层不能参与测量 ------------------------------
+            //
+            // Path 的 DesiredSize 来自 Data 的 Bounds，而材质的四条 Path 的
+            // Data 正是"整块玻璃那么大"的矩形。放在 Grid 里它们就参与测量：
+            // 面板所在的是 Auto 行，于是面板高度 = max(上一次的材质矩形,
+            // 内容高度) —— 内容变矮时高度不降，材质矩形永远停在上一轮，
+            // 面板只增不减，最后黑成一条到底的长条。
+            //
+            // Canvas 不测量子元素（DesiredSize 是 0）。材质层必须住在
+            // Canvas 里：只画，不撑。
+            const materialCanvas = (prefix) => {
+                const open = xaml.indexOf(`<Canvas x:Name="${prefix}Material">`);
+                if (open < 0) return null;
+                const close = xaml.indexOf('</Canvas>', open);
+                if (close < 0) return null;
+                return { open, close };
+            };
+            const zones = { Pill: materialCanvas('Pill'), Panel: materialCanvas('Panel') };
+            const outsideCanvas = [];
+            for (const name of materialPaths) {
+                const idx = xaml.indexOf(`x:Name="${name}"`);
+                const zone = name.startsWith('Pill') ? zones.Pill : zones.Panel;
+                if (idx < 0 || !zone || idx < zone.open || idx > zone.close) outsideCanvas.push(name);
+            }
+            if (outsideCanvas.length === 0) {
+                out('PASS', 'glass layout: every material path lives in a Canvas -- it paints without taking part in measuring');
+            } else {
+                out('FAIL', `glass layout: ${outsideCanvas.join(', ')} are not inside a Canvas -- a Path measures as big as its Data, so the panel height sticks to the previous one`);
+            }
+
+            // --- 6.10c 会话日志的遍历边界 ------------------------------
+            //
+            // round-24 review (hetaoBackend)：两个 scanner 以前都用
+            // EnumerateXxx(..., AllDirectories)，而微软的文档写明
+            // AllDirectories **包含 reparse point**（符号链接、junction、
+            // 挂载点）：
+            // https://learn.microsoft.com/en-us/dotnet/api/system.io.searchoption
+            //
+            // sessions 目录底下放一个 junction，递归就会顺着它走进外面，
+            // 读到不属于这个用户的日志。所以源码里不能再有这种盲递归：
+            // 两个 scanner 都得走 scripts/lib/Safe-Traversal.ps1 那个有界的
+            // 遍历 —— 它拒绝 reparse point，并且在打开之前验证 canonical
+            // containment。
+            const safeLibPath = join(PLUGIN_ROOT, 'scripts', 'lib', 'Safe-Traversal.ps1');
+            const safeLibExists = await exists(safeLibPath);
+            if (safeLibExists) {
+                out('PASS', 'traversal: the bounded traversal lib exists');
+            } else {
+                out('FAIL', 'traversal: scripts/lib/Safe-Traversal.ps1 is missing -- the scanners have no bounded way to walk the sessions root');
+            }
+            const blindWalk = [];
+            const notBounded = [];
+            if (safeLibExists) {
+                const safeText = await readFile(safeLibPath, 'utf8');
+                const safeCode = safeText.split(/\r?\n/).filter((l) => !/^\s*#/.test(l)).join('\n');
+                if (/AllDirectories/.test(safeCode)) blindWalk.push('scripts/lib/Safe-Traversal.ps1');
+                if (!/TopDirectoryOnly/.test(safeCode)) blindWalk.push('scripts/lib/Safe-Traversal.ps1 (it does not walk one level at a time)');
+                // 检查的是**调用点**，不是函数定义：定义里带着 ReparsePoint /
+                // Test-PathContained 这两个词，而调用点才是真正在把关的地方。
+                if (!/Test-PathIsReparsePoint\s+\$d/.test(safeCode)) blindWalk.push('scripts/lib/Safe-Traversal.ps1 (it never rejects a reparse point)');
+                if (!/Test-PathContained\s+\$rootFull\s+\$d/.test(safeCode)) blindWalk.push('scripts/lib/Safe-Traversal.ps1 (it never checks containment)');
+                for (const rel of ['scripts/lib/Session-Tracker.ps1', 'mcode-status-detect.ps1']) {
+                    const text = await readFile(join(PLUGIN_ROOT, ...rel.split('/')), 'utf8');
+                    const code = text.split(/\r?\n/).filter((l) => !/^\s*#/.test(l)).join('\n');
+                    if (/AllDirectories/.test(code)) blindWalk.push(rel);
+                    if (!/Get-SafeSessionEntries/.test(code)) notBounded.push(rel);
+                }
+            }
+            if (blindWalk.length === 0 && safeLibExists) {
+                out('PASS', 'traversal: no scanner walks the sessions root with a blind AllDirectories recursion');
+            } else {
+                out('FAIL', `traversal: ${blindWalk.join(', ')} still recurse with AllDirectories -- it follows reparse points out of the sessions root`);
+            }
+            if (notBounded.length === 0 && safeLibExists) {
+                out('PASS', 'traversal: both scanners go through the bounded traversal');
+            } else {
+                out('FAIL', `traversal: ${notBounded.join(', ')} do not use Get-SafeSessionEntries`);
+            }
+
+            // --- 6.11 每块面各判各的极 ----------------------------------
+            // HIG "Materials": 每块材质各自调整明度来保住可读性。药丸和展开
+            // 面板背后可能差得很远（药丸压着一段亮色标题栏，面板底下却是一
+            // 片深色编辑器），所以极性和墨色必须**按面拆开**。
+            //
+            // 共用一份极性的后果真机见过：面板判出浅色极把全局翻了，药丸就
+            // 变成"暗玻璃 + 深色字"，看着像渲染坏了 —— 而且两块面每 100ms
+            // 互相翻一次，整个 UI 在浅色/深色之间闪。
+            {
+                const hasPanelPole = /\$script:glassPanelPole\s*=\s*'dark'/.test(psCode);
+                if (hasPanelPole) {
+                    out('PASS', 'glass poles: the panel keeps a pole of its own, independent of the pill');
+                } else {
+                    out('FAIL', 'glass poles: the panel has no pole of its own ($script:glassPanelPole) -- both surfaces would share one polarity, and the one that disagrees would end up unreadable');
+                }
+
+                // 判极的函数必须是纯的：迟滞相对"这块面自己的极"判断。
+                // 一旦它去读全局极性，两块面就又绑在一起了。
+                const resolverBody = (psCode.match(/function Resolve-GlassPole \{[\s\S]*?\n\}/) || [''])[0];
+                const resolverPure = /param\(\[double\]\$L, \[string\]\$Current\)/.test(resolverBody)
+                    && !/\$script:glassPole\b/.test(resolverBody)
+                    && !/\$script:glassPanelPole\b/.test(resolverBody);
+                if (resolverPure) {
+                    out('PASS', 'glass poles: the pole resolver is pure -- hysteresis is judged against the surface it is handed');
+                } else {
+                    out('FAIL', 'glass poles: Resolve-GlassPole reads or writes a global pole -- the pill and the panel would keep flipping each other');
+                }
+
+                // 两块面必须各写各的极。
+                const writesPill = /\$script:glassPole\s*=\s*\$pole/.test(psCode);
+                const writesPanel = /\$script:glassPanelPole\s*=\s*\$pole/.test(psCode);
+                const picksPerPrefix = /\$isPanel\s*=\s*\(\$Prefix\s+-eq\s+'Panel'\)/.test(psCode)
+                    && /Resolve-GlassPole\s+\$L\s+\$curPole/.test(psCode);
+                if (writesPill && writesPanel && picksPerPrefix) {
+                    out('PASS', 'glass poles: the material picks the pole per surface (pill and panel each store their own)');
+                } else {
+                    out('FAIL', `glass poles: the material does not pick a pole per surface (pill write ${writesPill}, panel write ${writesPanel}, per-prefix branch ${picksPerPrefix})`);
+                }
+
+                // 列表行画在面板上，字的墨色必须跟面板的极走。
+                const rowBody = (psCode.match(/function Add-SessionRow[\s\S]*?\n\}/) || [''])[0];
+                const rowsUsePanelInk = /Get-PanelInk/.test(rowBody)
+                    && /Get-PanelStateMap/.test(rowBody)
+                    && !/Get-GlassInk/.test(rowBody)
+                    && !/Get-GlassStateMap/.test(rowBody);
+                if (rowsUsePanelInk) {
+                    out('PASS', 'glass poles: the session rows take their ink and state colours from the panel they are drawn on');
+                } else {
+                    out('FAIL', 'glass poles: the session rows still take their colours from the global pole -- a dark panel would get dark text');
+                }
+
+                // 药丸的字跟药丸自己的极走，不能被面板的极带偏。
+                const inkBody = (psCode.match(/function Update-GlassInk \{[\s\S]*?\n\}/) || [''])[0];
+                const pillInkOwn = /Get-GlassInk/.test(inkBody) && !/Get-PanelInk/.test(inkBody);
+                if (pillInkOwn) {
+                    out('PASS', 'glass poles: the pill text takes its ink from the pill pole, not the panel pole');
+                } else {
+                    out('FAIL', 'glass poles: the pill text is coloured from the panel pole -- the pill and the panel would fight over one ink set');
+                }
+
+                // 颗粒笔刷同理：暗玻璃白点、亮玻璃黑点，两块面各用各的。
+                const grainPerSurface = /Update-GlassGrain\s+'PillGrain'\s+\$script:glassPole/.test(psCode)
+                    && /Update-GlassGrain\s+'PanelGrain'\s+\$script:glassPanelPole/.test(psCode);
+                if (grainPerSurface) {
+                    out('PASS', 'glass poles: the grain brush follows each surface pole (white specks on dark glass, black on light)');
+                } else {
+                    out('FAIL', 'glass poles: the grain brush is not chosen per surface -- one of the two glass bodies gets the wrong speck colour');
+                }
+
+                // 亮度日志也按面分开。
+                //
+                // 两块面共用一个槽位时，亮度行只在变化超过 0.12 时才记，两块面
+                // 轮流往同一个槽位写，后写的那面几乎永远落不下自己的一行 ——
+                // "面板为什么变白了"就成了查不出来的事（面板换了极，日志里只剩
+                // 药丸的亮度）。日志是排查这类问题的唯一入口，不能自己瞎掉。
+                const lumPerSurface = /\$script:glassLoggedLum\s*=\s*@\{\}/.test(psCode)
+                    && /\$null -eq \$script:glassLoggedLum\[\$Prefix\]/.test(psCode);
+                if (lumPerSurface) {
+                    out('PASS', 'glass poles: each surface logs its own luminance (the panel would never get a brightness line of its own)');
+                } else {
+                    out('FAIL', 'glass poles: the luminance log slot is shared between the two surfaces -- the panel would almost never get a brightness line of its own');
+                }
+            }
+
+            // --- 6.12 收敛到目标灰度（"统一黑色"）------------------------
+            //
+            // HIG "Materials": regular 变体 "blurs and **adjusts the luminosity**
+            // of background content to maintain legibility of text"。所以算法
+            // 必须是"先定目标灰度，再反推混多少"，而不是"压固定比例的黑"。
+            //
+            // 不这么做的后果真机见过：白底上玻璃停在中灰（字节 106 ≈ #6A6A6A），
+            // 深色字压上去就是一团脏灰 —— 用户嫌它"灰突突"。
+            {
+                const converges = /\$veil\s*=\s*1\.0\s*-\s*\(\$target\s*\/\s*\$L\)/.test(psCode)
+                    && /\$lift\s*=\s*\(\$target\s*-\s*\$L\)\s*\/\s*\(1\.0\s*-\s*\$L\)/.test(psCode);
+                if (converges) {
+                    out('PASS', 'glass convergence: the glass mixes towards a target grey instead of a fixed black wash');
+                } else {
+                    out('FAIL', 'glass convergence: the material does not solve for a target grey -- the glass lands on a mid grey over a bright backdrop');
+                }
+
+                // 深色极的目标必须落在"真黑"那一档：macOS 那个 Dynamic Island
+                // 是 #1C1C1E（字节 28 ≈ 0.11），再深就糊成一团分不出玻璃。
+                const darkTarget = P.targetDark;
+                if (darkTarget !== null && darkTarget >= 0.09 && darkTarget <= 0.15) {
+                    out('PASS', `glass convergence: the dark pole converges on the island black (target ${darkTarget}, ~#${Math.round(255 * darkTarget).toString(16).padStart(2, '0').toUpperCase()})`);
+                } else {
+                    out('FAIL', `glass convergence: the dark pole target ${darkTarget} is not the island black (0.09..0.15) -- the glass would read as grey, not as a black slab`);
+                }
+
+                // 默认必须是统一的黑玻璃：浅色极在白底上"灰突突"就是它惹的。
+                const defaultIsDark = /materialPole\s*=\s*'dark'/.test(psCode);
+                if (defaultIsDark) {
+                    out('PASS', 'glass convergence: the default material is the unified black glass');
+                } else {
+                    out('FAIL', 'glass convergence: the default material is not the black glass -- the island would still switch to a grey material over a bright backdrop');
+                }
+
+                // 参数名不许和局部名撞车。
+                //
+                // PowerShell 的变量名不区分大小写，而且参数的类型约束还在：
+                // 参数是 [bool]$Thick，函数体里再写 $thick = 0.25 会被强制转成
+                // $true，接着 (1.0 - $thick) 算出 0，目标灰度被乘成 0 —— 玻璃
+                // 成了纯黑（veil 恒等于 1）。
+                //
+                // 这类坑静态断言看不出来（数值都"对"，只是被转换了），所以只能
+                // 把"参数名和局部名不撞车"这条纪律本身锁住。
+                const applyStart = psCode.indexOf('function Apply-GlassMaterial {');
+                const applyEnd = psCode.indexOf('\nfunction ', applyStart + 10);
+                const applyBody = applyStart < 0 ? '' : psCode.slice(applyStart, applyEnd < 0 ? undefined : applyEnd);
+                const thickIsTyped = /param\([^)]*\[bool\]\$Thick\)/.test(applyBody);
+                const thickShadowed = /\$thick(?![\w])\s*=/i.test(applyBody);
+                if (thickIsTyped && !thickShadowed) {
+                    out('PASS', 'glass convergence: the thickness factor does not shadow the typed parameter ($Thick)');
+                } else {
+                    out('FAIL', 'glass convergence: the thickness factor shadows the [bool]$Thick parameter -- PowerShell would coerce it and the target grey would collapse to 0');
+                }
+            }
+        }
     }
 
     finish();

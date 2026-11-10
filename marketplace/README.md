@@ -80,7 +80,7 @@ holds the package, and the subdirectory at `marketplace/<plugin-name>`. The guid
 
 ### The field values, field by field
 
-The form has 11 questions. For `mcode-island` at v0.10.0 they are:
+The form has 11 questions. For `mcode-island` at v0.11.0 they are:
 
 | #  | question                           | value                                                                          |
 | -- | ---------------------------------- | ------------------------------------------------------------------------------ |
@@ -88,7 +88,7 @@ The form has 11 questions. For `mcode-island` at v0.10.0 they are:
 | 2  | Operation type                     | 更新插件 / Update the plugin.                                                  |
 | 3  | Source type                        | GitHub                                                                         |
 | 4  | GitHub repository URL              | `https://github.com/antianqi/MiniMax-Code-Plugins-1`                          |
-| 5  | GitHub ref                         | `marketplace-v0.10.0` (the tag that holds the package)                          |
+| 5  | GitHub ref                         | `marketplace-v0.11.0` (the tag that holds the package)                          |
 | 6  | GitHub subdirectory                | `marketplace/mcode-island`                                                     |
 | 7  | Target region                      | CN                                                                             |
 | 8  | Delivery target                    | 桌面端 / Desktop                                                               |
@@ -108,7 +108,7 @@ Three things that cost a submission if they are wrong:
 
 ### The maintenance authorization evidence (question 9)
 
-Required for an update of an already listed plugin. As of v0.10.0:
+Required for an update of an already listed plugin. As of v0.11.0:
 
 ```
 该 Plugin 已上架于官方 Marketplace,现有版本 mcode-island 0.5.1(可用
@@ -118,15 +118,15 @@ Required for an update of an already listed plugin. As of v0.10.0:
 
 1. 上架包所在公开仓库(仓库 owner 即本插件作者账号 antianqi):
    https://github.com/antianqi/MiniMax-Code-Plugins-1
-2. 本次提交对应的 tag 与子目录(tag: marketplace-v0.10.0):
-   https://github.com/antianqi/MiniMax-Code-Plugins-1/tree/marketplace-v0.10.0/marketplace/mcode-island
+2. 本次提交对应的 tag 与子目录(tag: marketplace-v0.11.0):
+   https://github.com/antianqi/MiniMax-Code-Plugins-1/tree/marketplace-v0.11.0/marketplace/mcode-island
 3. Marketplace 中已上架的 0.5.1 由同一账号 antianqi 提交,历史受理记录包括
    PLUGIN-202610210195、PLUGIN-202610220196、PLUGIN-202610220200。
 4. 插件源码与上架包在同一仓库维护:源码在 plugins/antianqi/mcode-island,
    上架包由 marketplace/build-marketplace-package.ps1 从该源码生成,
-   并由 marketplace/audit-marketplace-package.ps1 自动审计(240 项检查,0 失败)。
+   并由 marketplace/audit-marketplace-package.ps1 自动审计(247 项检查,0 失败)。
 
-本次更新(v0.8.0 → v0.10.0)内容:
+本次更新(v0.8.0 → v0.11.0)内容:
 - v0.8.0 点击行为适配桌面端:点 pill 聚焦桌面应用主窗口(MiniMax Inside Code /
   MiniMax Code / Mavis),不再隐藏终端;优先级为 手动 pin > 桌面端应用窗口 >
   来源终端窗口(保留原来的显隐切换)。手动 pin 从 caller.json 移到独立的
@@ -156,6 +156,16 @@ Required for an update of an already listed plugin. As of v0.10.0:
   (4) 标题和预览在写盘和显示之前先截断再脱敏,README 写明读了哪些数据
       (会话日志的首条用户消息、最后一条消息、日志修改时间);
   (5) 会话列表有清理机制:30 分钟没动的会话从列表和 sessions.json 里清掉。
+- v0.11.0 同步官方仓库合并的 PR #62(2026-11-10 合并),包含:
+  (1) 状态条材质重做成真正的 Liquid Glass 磨砂玻璃:玻璃本体初始透明,运行时
+      从实时屏幕捕获里画出来,再混向保证文字可读的目标灰;源码里没有写死的
+      颜色。材质画在 pill 自己的窗口里,跟着 pill 动;
+  (2) 会话日志的遍历有边界:从不用会跟随重解析点的 SearchOption.AllDirectories,
+      重解析点和跑出会话根目录的候选一律拒绝(junction 拿不到机器上别处的日志);
+  (3) 会话列表有数量/预览长度/文件体积上限和淘汰,不再无限增长;
+  (4) 会话 id 做了白名单校验并以不求值的方式传参,消除命令注入;
+  (5) 会话行可以键盘操作,消除标记也能用主 Enter 键触发;
+  (6) 会话列表的注入测试(44 项)进 CI,改动前先证明测试能抓到。
 
 包仍满足上架规则:纯 ASCII、无 BOM、无凭据、无 Hook、仅 MiniMax Plugin V1
 manifest,所有 .ps1 带 Windows 平台守卫。

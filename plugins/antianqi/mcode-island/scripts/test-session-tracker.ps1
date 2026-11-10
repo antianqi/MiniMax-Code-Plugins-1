@@ -54,17 +54,26 @@ Invoke-Expression (Extract-Function $detect 'Get-ToolKey')
 Invoke-Expression (Extract-Function $detect 'Test-IsAskUser')
 
 # The store lib (the lock) and the tracker lib.
+#
+# Safe-Traversal.ps1 has to be loaded BEFORE Session-Tracker.ps1: the tracker
+# refuses to walk the sessions tree without it (fail closed), and the tracker
+# lib checks for it at the point of use, so the order here is what a reader
+# has to know.
 . (Join-Path (Join-Path $pluginRoot 'scripts') (Join-Path 'lib' 'Status-Store.ps1'))
+. (Join-Path (Join-Path $pluginRoot 'scripts') (Join-Path 'lib' 'Safe-Traversal.ps1'))
 . (Join-Path (Join-Path $pluginRoot 'scripts') (Join-Path 'lib' 'Session-Tracker.ps1'))
 
-# 脱敏的替身：真实的 Protect-SecretText 在 scripts/lib/Protect-Text.ps1 里，
-# 由 detector 在 dot-source tracker 之前加载。测试里先装一个只认一种形状
-# 的假货，好断言"标题和预览都过了脱敏"。
-function Protect-SecretText {
-  param([string]$Text)
-  if (-not $Text) { return $Text }
-  return ($Text -replace 'sk-[A-Za-z0-9]{6,}', 'sk-***')
-}
+# 脱敏用的是真的那个 lib（scripts/lib/Protect-Text.ps1）：生产里 detector 也是
+# 先 dot-source 它、再 dot-source tracker。用一个只认 `sk-` 的替身只能证明
+# "调用发生了"，证明不了真正覆盖哪些形状 —— 而 review 要的正是覆盖面：
+# 标题和预览里出现 JWT / Bearer / JSON token / kv 密码时，都不能漏。
+. (Join-Path (Join-Path $pluginRoot 'scripts') (Join-Path 'lib' 'Protect-Text.ps1'))
+
+# 功能用例一次会造二十来个会话，而生产默认上限就是 20 —— 上限本身在第 14 组
+# 里显式设定验证。这里先放宽，免得上限把别组的夹具淘汰掉，变成"别的断言
+# 失败、原因却是上限"。默认值先记下来，第 14 组断言它是个真实的界。
+$defaultMax = $script:MAX_SESSIONS
+$script:MAX_SESSIONS = 1000
 
 # 读日志的计数器：审核第 1 条要断言"过期的会话的日志一次都没被读"。
 # tracker 调 Get-LastJsonLine 是运行期解析，所以这里重新定义一遍就会生效。
@@ -224,6 +233,32 @@ Update-SessionTracker
 Check 'ack.signal 里的 session 被消掉' (-not $script:trackedSessions.Contains('sess-flip')) ("列表: " + (($script:trackedSessions.Keys) -join ','))
 Check '消除被记进 dismissed' ($script:dismissedSessions.Contains('sess-flip')) ($script:dismissedSessions | ConvertTo-Json -Compress)
 Check 'ack.signal 本身被消费掉' (-not (Test-Path (Join-Path $configDir 'ack.signal'))) '文件还在'
+
+# 一次消多条。
+#
+# 列表每行都有 × 可以单独消除，"一秒内消掉两三条"是正常操作。以前
+# ack.signal 一个文件只装一个 id，后写的盖掉先写的 —— 那一条就永远消不
+# 掉，而且用户不知道它没被消（点 × 的那一下看着是生效了的）。
+#
+# 所以改成一行一个 id。
+$fMulti1 = New-Session 'sess-multi-1' @((Line-User '要消掉的第一个'))
+$fMulti2 = New-Session 'sess-multi-2' @((Line-User '要消掉的第二个'))
+$fMulti3 = New-Session 'sess-multi-3' @((Line-User '要消掉的第三个'))
+Update-SessionTracker
+Check '三条待消除的会话都在列表里' ($script:trackedSessions.Contains('sess-multi-1') -and $script:trackedSessions.Contains('sess-multi-2') -and $script:trackedSessions.Contains('sess-multi-3')) ("列表: " + (($script:trackedSessions.Keys) -join ','))
+[System.IO.File]::WriteAllText((Join-Path $configDir 'ack.signal'), "sess-multi-1`nsess-multi-2`nsess-multi-3`n", (New-Object System.Text.UTF8Encoding($false)))
+Update-SessionTracker
+Check '一次 ack 里的三条都被消掉' ((-not $script:trackedSessions.Contains('sess-multi-1')) -and (-not $script:trackedSessions.Contains('sess-multi-2')) -and (-not $script:trackedSessions.Contains('sess-multi-3'))) ("列表: " + (($script:trackedSessions.Keys) -join ','))
+Check '三条都记进了 dismissed' ($script:dismissedSessions.Contains('sess-multi-1') -and $script:dismissedSessions.Contains('sess-multi-2') -and $script:dismissedSessions.Contains('sess-multi-3')) ($script:dismissedSessions | ConvertTo-Json -Compress)
+Check '消费后没有留下 .taken 残file' (-not (Test-Path (Join-Path $configDir 'ack.signal.taken'))) '有残file'
+
+# 只写一行（末尾没有换行）也要能消掉 —— widget 写的每一行都带换行，但
+# 手工写一个 id 也要认。
+$fSolo = New-Session 'sess-solo-ack' @((Line-User '单独消一条'))
+Update-SessionTracker
+[System.IO.File]::WriteAllText((Join-Path $configDir 'ack.signal'), 'sess-solo-ack', (New-Object System.Text.UTF8Encoding($false)))
+Update-SessionTracker
+Check '单个 id（无换行结尾）也被消掉' (-not $script:trackedSessions.Contains('sess-solo-ack')) ("列表: " + (($script:trackedSessions.Keys) -join ','))
 
 # --- 6. 持久化 -------------------------------------------------------------
 Write-SessionsFile -Force
@@ -485,6 +520,240 @@ $cycleBefore = $script:trackedSessions['sess-stopcycle'].Cycle
 Update-SessionTracker
 Check '停了以后又跑起来算新一轮' ($script:trackedSessions['sess-stopcycle'].Cycle -eq ($cycleBefore + 1)) ("得到: " + $script:trackedSessions['sess-stopcycle'].Cycle + ", 之前 " + $cycleBefore)
 
+# --- 13. 会话 id 的形状 --------------------------------------------------
+#
+# id 有两个来源，都不是我们生成的：会话目录名里的 base64，以及上一次跑留在
+# sessions.json 里的条目。它曾经被拼进 `powershell -Command` 的字符串里，
+# 于是一个形如 `x; Set-Content ...` 的 id 能执行任意 PowerShell。那条路
+# 已经删掉（匹配不上就失败关闭），这里再盯住 id 本身。
+Check '真实形状的 id 通过' (Test-SessionIdSafe 'mvs_70378ec639b2471a8f205b954e98a589')
+Check '带连字符和下划线的 id 通过' (Test-SessionIdSafe 'e2e-test-001')
+Check '空 id 不通过' (-not (Test-SessionIdSafe ''))
+Check '带分号的 id 不通过' (-not (Test-SessionIdSafe 'x; Set-Content C:\pwn.ps1 1'))
+Check '带空格的 id 不通过' (-not (Test-SessionIdSafe 'a b'))
+Check '带反引号的 id 不通过' (-not (Test-SessionIdSafe 'a`b'))
+Check '带路径的 id 不通过' (-not (Test-SessionIdSafe '..\..\evil'))
+Check '超长 id 不通过' (-not (Test-SessionIdSafe ('a' * 200)))
+
+# 目录名里藏着的 base64 解码出非法 id 时，这个目录要当成"没有会话"：
+# 没有 id 就没法去重、也没法指向它。
+$evilDir = Split-Path -Parent (New-Session 'x; Remove-Item -Recurse C:\' @((Line-User 'evil')))
+Check '目录名里藏着非法 id 时解不出 id' ((Get-SessionIdFromDir $evilDir) -eq '') ("得到: '" + (Get-SessionIdFromDir $evilDir) + "'")
+Update-SessionTracker
+Check '非法 id 的会话不进列表' (-not $script:trackedSessions.Contains('x; Remove-Item -Recurse C:\')) '列表里出现了这个 id'
+
+# --- 14. 会话数有上限 ----------------------------------------------------
+#
+# 30 分钟的活性窗口管不住"同一时刻活着的会话很多"：一上午开几十个，30 分钟
+# 内它们全都还在，列表顶满屏幕、sessions.json 也长成一本历史书。这里断言
+# 上限确实生效、淘汰的是最后活动更早的那些，而且只淘汰**不活跃**的（淘汰的
+# 会话不能被下一轮扫描当新会话捞回来）。
+$script:trackedSessions.Clear()
+$script:dismissedSessions.Clear()
+# 前面各组造的夹具日志都是"刚动过"，过不了不活跃判定；统一退到 2 分钟前，
+# 它们就不会作为新会话被扫回来，这一组只看见自己造的 5 个。
+foreach ($f in @([System.IO.Directory]::EnumerateFiles($sessionsRoot, '*.jsonl', 'AllDirectories'))) {
+  [System.IO.File]::SetLastWriteTimeUtc($f, [DateTime]::UtcNow.AddMinutes(-2))
+}
+$capIds = @()
+$capFiles = @()
+foreach ($i in 1..5) {
+  $capIds += "sess-cap-$i"
+  # 先以"刚动过"的身份进来（新会话只收活性窗口内的），再退到过去。
+  $capFiles += (New-Session "sess-cap-$i" @((Line-User ("cap " + $i))))
+}
+Update-SessionTracker
+Check '5 个新会话都进了列表' ($script:trackedSessions.Count -eq 5) ("得到: " + $script:trackedSessions.Count)
+foreach ($i in 1..5) {
+  # 1 最老、5 最新，每个差一分钟。
+  [System.IO.File]::SetLastWriteTimeUtc($capFiles[$i - 1], [DateTime]::UtcNow.AddMinutes(-1 * (10 - $i)))
+}
+Update-SessionTracker
+Check '不活跃后仍在列表里（只是时间变老）' ($script:trackedSessions.Count -eq 5) ("得到: " + $script:trackedSessions.Count)
+Check '生产默认上限是个真实的界' ($defaultMax -ge 5 -and $defaultMax -le 50) ("得到: " + $defaultMax)
+$script:MAX_SESSIONS = 3
+Update-SessionTracker
+Check '会话数被压到上限' ($script:trackedSessions.Count -eq 3) ("得到: " + $script:trackedSessions.Count)
+Check '留下的是最后活动更晚的三个' ($script:trackedSessions.Contains('sess-cap-3') -and $script:trackedSessions.Contains('sess-cap-4') -and $script:trackedSessions.Contains('sess-cap-5')) ("留下: " + (@($script:trackedSessions.Keys) -join ','))
+Check '淘汰的是最后活动更早的那些' ((-not $script:trackedSessions.Contains('sess-cap-1')) -and (-not $script:trackedSessions.Contains('sess-cap-2'))) '老会话还在列表里'
+# 被淘汰的会话日志在活性窗口外，下一轮扫描不该把它捞回来 —— 否则就是每个
+# tick 淘汰一次、重新加入一次，列表会闪。
+Update-SessionTracker
+Check '淘汰的会话不会被下一次扫描捞回来' ($script:trackedSessions.Count -eq 3 -and -not $script:trackedSessions.Contains('sess-cap-1')) ("得到: " + $script:trackedSessions.Count)
+# 正在跑的会话不淘汰：把上限压到 1，三个刚动过的会话一个都不该少。
+$script:MAX_SESSIONS = 1
+foreach ($id in @($capIds | Where-Object { $script:trackedSessions.Contains($_) })) {
+  $log = Join-Path ([string]$script:trackedSessions[$id].Dir) 'messages.jsonl'
+  if ($log -and (Test-Path -LiteralPath $log)) { [System.IO.File]::SetLastWriteTimeUtc($log, [DateTime]::UtcNow) }
+}
+Update-SessionTracker
+Check '正在跑的会话不会被上限砍掉' (@($capIds | Where-Object { $script:trackedSessions.Contains($_) }).Count -eq 3) ("得到: " + (@($capIds | Where-Object { $script:trackedSessions.Contains($_) }) -join ','))
+$script:MAX_SESSIONS = 1000
+
+# --- 15. sessions.json 里的 id 也要过同一道门 ---------------------------
+#
+# 恢复路径读的是上一次跑写下的文件，那个文件可能被手改过。一个不合法的 id
+# 进来，至少会让列表里出现一条点不开的条目。
+$script:trackedSessions.Clear()
+$evilJson = '{"sessions":[{"id":"ok-restored","title":"fine","phase":"idle"},{"id":"x; Remove-Item -Recurse C:\\","title":"evil","phase":"working"}]}'
+[System.IO.File]::WriteAllText((Join-Path $configDir 'sessions.json'), $evilJson, (New-Object System.Text.UTF8Encoding($false)))
+Restore-SessionTracker
+Check 'sessions.json 里合法的 id 照常恢复' ($script:trackedSessions.Contains('ok-restored')) '没有恢复 ok-restored'
+Check 'sessions.json 里非法的 id 被丢掉' (-not $script:trackedSessions.Contains('x; Remove-Item -Recurse C:\')) '非法 id 进了列表'
+
+# --- 16. 标题和预览的脱敏覆盖面 ------------------------------------------
+#
+# review 第 3 条：标题和预览都会写进 sessions.json，也会画在屏幕上，所以它们
+# 必须过脱敏。这里每种形状各起一个会话，让 canary 出现在**标题**（首条 user
+# 消息）和**预览**（最后一条 assistant 消息）里 —— 两边是两条不同的代码路径，
+# 只测一边会漏另一边。
+#
+# 每条都把 canary 放在最前面：标题会截断到 40 字，藏在后面的 canary 被截掉
+# 后"不含原文"就变成恒真了。断言里要求出现脱敏标记，证明它确实被替换过，
+# 而不是恰好没显示。
+$shapes = @(
+  @{ Name = 'jwt';    Secret = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjYW5hcnkifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c' },
+  @{ Name = 'bearer'; Secret = '8f3a91c2d4e5f60718293a4b5c6d7e8f' },
+  @{ Name = 'json';   Secret = 'json-canary-4c1d2e' },
+  @{ Name = 'kv';     Secret = 'kv-canary-9a8b7c' }
+)
+foreach ($s in $shapes) {
+  $lead = switch ($s.Name) {
+    'bearer' { 'Bearer ' + $s.Secret + ' 看这个' }
+    'json'   { '{"token":"' + $s.Secret + '"} 配置' }
+    'kv'     { 'password=' + $s.Secret + ' 登录' }
+    default  { $s.Secret + ' 读一下' }
+  }
+  $id = 'sess-leak-' + $s.Name
+  New-Session $id @((Line-User $lead), (Line-Assistant ('记下了 ' + $lead))) | Out-Null
+  Update-SessionTracker
+  $e = $script:trackedSessions[$id]
+  if (-not $e) {
+    Check ($s.Name + '：会话进了列表') $false '会话不在列表里，脱敏断言没有意义'
+    continue
+  }
+  $title = [string]$e.Title
+  $preview = [string]$e.Preview
+  Check ($s.Name + '：标题里没有原文') (-not $title.Contains([string]$s.Secret)) ("得到: '" + $title + "'")
+  Check ($s.Name + '：预览里没有原文') (-not $preview.Contains([string]$s.Secret)) ("得到: '" + $preview + "'")
+  Check ($s.Name + '：标题确实被脱敏过（不是恰好没显示）') ($title -match 'redacted') ("得到: '" + $title + "'")
+  Check ($s.Name + '：预览确实被脱敏过（不是恰好没显示）') ($preview -match 'redacted') ("得到: '" + $preview + "'")
+}
+Write-SessionsFile -Force
+$diskText = [System.IO.File]::ReadAllText((Join-Path $configDir 'sessions.json'))
+foreach ($s in $shapes) {
+  Check ($s.Name + '：sessions.json 里没有原文') (-not $diskText.Contains([string]$s.Secret)) 'sessions.json 里出现了 canary'
+}
+
+# --- 越界：junction 指向 sessions root 之外，不能被读到 ---------------------
+#
+# round-24 review (hetaoBackend)：以前的两个 scanner 都用
+# EnumerateDirectories / EnumerateFiles(..., 'AllDirectories')，而微软的文档
+# 写明 AllDirectories **包含 reparse point**（符号链接、junction、挂载点）：
+# https://learn.microsoft.com/en-us/dotnet/api/system.io.searchoption
+#
+# 所以 sessions 目录底下放一个 junction，递归就会顺着它走进外面：detector
+# 会读到外面那个 jsonl，会话列表会把别人的会话内容显示在灵动岛上。
+#
+# 这里真的造一个 junction，指向 fixture 外面一个目录，里面放一个 session，
+# 然后断言它进不了列表。
+$outsideId = 'outsidesecret'
+$outsideB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($outsideId))
+$outsideRoot = Join-Path $fixture 'outside-sessions'
+$outsideSession = Join-Path $outsideRoot ('2026-10-23-session_' + $outsideB64)
+New-Item -ItemType Directory -Path $outsideSession -Force | Out-Null
+[System.IO.File]::WriteAllText(
+  (Join-Path $outsideSession 'messages.jsonl'),
+  ((Line-User 'OUTSIDE-CANARY') -join "`n"),
+  (New-Object System.Text.UTF8Encoding($false)))
+# junction 得起个匹配 *session_* 的名字：遍历的 pattern 在每一层都生效，
+# 只有匹配上的目录才会被当成 session 目录。
+$junctionPath = Join-Path $dayDir '2026-10-23-session_junctionlink'
+$junctionMade = $false
+try {
+  New-Item -ItemType Junction -Path $junctionPath -Target $outsideRoot -ErrorAction Stop | Out-Null
+  $junctionMade = $true
+} catch {
+  Check 'junction 造得出来（否则后面几条断言没有意义）' $false ('造 junction 失败: ' + $_.Exception.Message)
+}
+if ($junctionMade) {
+  # 先证明它确实是 reparse point（PS 5.1 的 FileInfo 没有 Target 属性）
+  $jAttr = [System.IO.File]::GetAttributes($junctionPath)
+  Check 'junction 确实是 reparse point' (($jAttr -band [System.IO.FileAttributes]::ReparsePoint) -eq [System.IO.FileAttributes]::ReparsePoint) ('得到: ' + $jAttr)
+  # 夹具自证：旧的盲递归**确实**会被骗到。这条要是红，说明这个夹具根本没骗
+  # 过旧代码，后面的断言就是假绿。
+  $blindDirs = @([System.IO.Directory]::EnumerateDirectories($sessionsRoot, '*session_*', 'AllDirectories')) |
+    Where-Object { $_ -like ('*' + $outsideB64 + '*') }
+  Check '这个夹具真的骗得过旧的盲递归（否则后面的断言是假绿）' ($blindDirs.Count -gt 0) ('旧式递归也看不到外部 session，夹具无效: ' + ($blindDirs -join ';'))
+  # 安全遍历：不返回 junction 底下的东西
+  $safeFiles = @(Get-SafeSessionEntries -Root $sessionsRoot -Pattern '*.jsonl' -Files)
+  $leakedFiles = @($safeFiles | Where-Object { $_ -like ('*' + $outsideB64 + '*') })
+  Check '安全遍历不返回 junction 外面的日志' ($leakedFiles.Count -eq 0) ('泄漏: ' + ($leakedFiles -join ';'))
+  $safeDirs = @(Get-SafeSessionEntries -Root $sessionsRoot -Pattern '*session_*')
+  $leakedDirs = @($safeDirs | Where-Object { $_ -like ('*' + $outsideB64 + '*') })
+  Check '安全遍历不返回 junction 外面的 session 目录' ($leakedDirs.Count -eq 0) ('泄漏: ' + ($leakedDirs -join ';'))
+  # 列表：外部会话进不来
+  $script:trackedSessions.Clear()
+  $script:dismissedSessions.Clear()
+  Update-SessionTracker
+  Check 'junction 外面的会话不进列表' (-not $script:trackedSessions.Contains($outsideId)) ('外部 id 出现在列表里')
+}
+
+
+# --- 17. sessions.json 的字节上限 ----------------------------------------
+#
+# review 第 4 条要的是"有界的数据"。条数上限够不着文件大小：每条会话还带着
+# titles 历史，dismissed 那张表也没有条数上限，两样都随使用时长慢慢长。所以
+# 写盘前再按字节砍一遍。
+#
+# 这里把上限压到 1KB，让它必然触发（8 条长会话远超 1KB），然后看三件事：
+# 文件真被砍到界内、最新的会话还在、最旧的被丢了。上限放开后应该又能写全。
+$defaultJsonBytes = $script:MAX_SESSIONS_JSON_BYTES
+Check '生产默认字节上限是个真实的界' ($defaultJsonBytes -ge 4096 -and $defaultJsonBytes -le 1048576) ("得到: " + $defaultJsonBytes)
+
+$script:trackedSessions.Clear()
+$script:dismissedSessions.Clear()
+$script:MAX_SESSIONS = 1000
+# 把前面各组留下的夹具日志统一退到 10 分钟前：它们不该参与这一组的淘汰
+# 排序，否则"最新"会变成上一组留下的那几条，而不是这一组造的。
+foreach ($f in @([System.IO.Directory]::EnumerateFiles($sessionsRoot, '*.jsonl', 'AllDirectories'))) {
+  [System.IO.File]::SetLastWriteTimeUtc($f, [DateTime]::UtcNow.AddMinutes(-10))
+}
+$byteIds = @()
+$byteFiles = @()
+foreach ($i in 1..8) {
+  $byteIds += "sess-byte-$i"
+  $long = (('L' * 300) + " $i")
+  $byteFiles += (New-Session "sess-byte-$i" @((Line-User $long), (Line-User $long)))
+}
+Update-SessionTracker
+foreach ($i in 1..8) {
+  # 和第 14 组一样：显式拉开最后活动时间，"最新"才是确定的 newest。
+  [System.IO.File]::SetLastWriteTimeUtc($byteFiles[$i - 1], [DateTime]::UtcNow.AddMinutes(-1 * (10 - $i)))
+}
+Update-SessionTracker
+$inList = @($byteIds | Where-Object { $script:trackedSessions.Contains($_) })
+Check '8 个长会话都进了列表' ($inList.Count -eq 8) ("得到: " + ($inList -join ','))
+
+$script:MAX_SESSIONS_JSON_BYTES = 1024
+Write-SessionsFile -Force
+$jsonPath = Join-Path $configDir 'sessions.json'
+$jsonBytes = (Get-Item -LiteralPath $jsonPath).Length
+Check 'sessions.json 不超过字节上限' ($jsonBytes -le 1024) ("得到: " + $jsonBytes + " 字节")
+$parsed = ([System.IO.File]::ReadAllText($jsonPath) | ConvertFrom-Json)
+$fileIds = @(@($parsed.sessions) | ForEach-Object { [string]$_.id })
+Check 'sessions.json 还是合法 JSON' ($null -ne $parsed) '解析失败'
+Check '最新的会话留在了文件里' ($fileIds -contains 'sess-byte-8') ("留下: " + ($fileIds -join ','))
+Check '最旧的会话被丢出了文件' (-not ($fileIds -contains 'sess-byte-1')) ("留下: " + ($fileIds -join ','))
+
+$script:MAX_SESSIONS_JSON_BYTES = $defaultJsonBytes
+Write-SessionsFile -Force
+$parsed2 = ([System.IO.File]::ReadAllText($jsonPath) | ConvertFrom-Json)
+$kept8 = @(@($parsed2.sessions) | ForEach-Object { [string]$_.id })
+$inFile = @($byteIds | Where-Object { $kept8 -contains $_ })
+Check '上限放开后 8 个会话都写进去了' ($inFile.Count -eq 8) ("得到: " + ($inFile -join ','))
+$script:trackedSessions.Clear()
+$script:dismissedSessions.Clear()
 Write-Output "1..$script:n"
 Write-Output "# pass $script:n  fail $script:fail"
 if ($script:fail -gt 0) { exit 1 }

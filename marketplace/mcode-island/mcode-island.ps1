@@ -80,6 +80,8 @@ try {
   Add-Type -AssemblyName PresentationCore
   Add-Type -AssemblyName WindowsBase
   Add-Type -AssemblyName System.Xaml
+ # CopyFromScreen System.Drawing Bitmap/Graphics
+  Add-Type -AssemblyName System.Drawing
   Dbg 'WPF loaded'
 } catch {
   Dbg "WPF LOAD FAIL: $($_.Exception.Message)"
@@ -110,6 +112,9 @@ public class WinAPI {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassNameW(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
   [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr hWnd, uint dwFlags);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool GetMonitorInfoW(IntPtr hMonitor, ref MONITORINFO lpmi);
+ // WDA_EXCLUDEFROMCAPTURE
+  [DllImport("user32.dll")] public static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+  [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr hObject);
   [StructLayout(LayoutKind.Sequential)]
   public struct RECT { public int Left, Top, Right, Bottom; }
   [StructLayout(LayoutKind.Sequential)]
@@ -193,11 +198,14 @@ $defaultConfig = [PSCustomObject]@{
   height   = 70
   opacity  = 0.95
   autostart = $false
+ # dark = light =
+ # auto =
+  materialPole = 'dark'
 }
 if (Test-Path $configFile) {
   try { $cfg = Get-Content $configFile -Raw -Encoding UTF8 | ConvertFrom-Json }
   catch { $cfg = $defaultConfig }
-  foreach ($p in @('x','y','width','height','opacity','autostart')) {
+  foreach ($p in @('x','y','width','height','opacity','autostart','materialPole')) {
     if (-not (Get-Member -InputObject $cfg -Name $p -ErrorAction SilentlyContinue)) {
       Add-Member -InputObject $cfg -NotePropertyName $p -NotePropertyValue $defaultConfig.$p
     }
@@ -206,6 +214,9 @@ if (Test-Path $configFile) {
   $cfg = $defaultConfig
   $cfg | ConvertTo-Json | Out-File -FilePath $configFile -Encoding UTF8
 }
+
+$script:glassMargin = 18
+$script:glassMarginPanelBottom = 24
 
 # XAML pill
 $xaml = @'
@@ -216,36 +227,97 @@ $xaml = @'
         Topmost="True" ShowInTaskbar="False" ResizeMode="NoResize"
         WindowStartupLocation="Manual" UseLayoutRounding="True" SnapsToDevicePixels="True"
         Focusable="False" ShowActivated="False">
-  <Grid>
+  <Grid x:Name="RootGrid">
     <Grid.RowDefinitions>
       <!-- row 0   config   height   70  -->
       <RowDefinition x:Name="PillRow" Height="70"/>
       <!-- row 1   session   0 -->
       <RowDefinition x:Name="SessionListRow" Height="0"/>
     </Grid.RowDefinitions>
-  <Border x:Name="Pill" Grid.Row="0" CornerRadius="30"
-          Background="#CC1A1A20" BorderBrush="#33FFFFFF" BorderThickness="1"
-          Padding="22,6" Margin="0">
+  <!--
+          Liquid Glass 
+
+     Apple HIG "Materials" Liquid Glass / regular  
+    WWDC25 "Meet Liquid Glass" 
+
+      1. ** ** 
+          " "
+           New-GlassCapture  #232734  
+          " " 
+      2. **regular   =   +  ** 
+          
+         Apply-GlassMaterial 
+      3. ** ** specular 
+          " " " " 
+          
+
+     
+      PillGlass.Background    +      " "
+      PillTint              /  +  
+      PillGrain              8bit  
+      PillRim               
+      PillEdge              " " 
+                         
+
+      Border   CornerRadius   Border  
+    CornerRadius   Grid   Clip 
+     / 
+  -->
+  <Border x:Name="Pill" Grid.Row="0" Padding="0" Margin="0">
     <Border.Effect>
-      <DropShadowEffect Color="Black" Opacity="0.45" BlurRadius="22" ShadowDepth="3"/>
+      <DropShadowEffect x:Name="PillShadow" Color="Black" Opacity="0.45" BlurRadius="28" ShadowDepth="7"/>
     </Border.Effect>
-    <Grid>
+    <Grid x:Name="PillGlass" Background="#FF16181D">
+      <!--
+          Canvas  Grid  
+
+        Path   DesiredSize   Data   Bounds  Path   Data  
+        " "  Grid  
+          Auto  
+          max( ,  )    
+         
+
+        Canvas  DesiredSize   0 
+         
+      -->
+      <Canvas x:Name="PillMaterial">
+        <Path x:Name="PillTint" Fill="Transparent" Stroke="Transparent"/>
+        <Path x:Name="PillGrain" Fill="Transparent" Stroke="Transparent"/>
+        <Path x:Name="PillRim" Fill="Transparent" Stroke="Transparent" StrokeThickness="1"/>
+        <Path x:Name="PillEdge" Fill="Transparent" Stroke="Transparent" StrokeThickness="1"/>
+      </Canvas>
+
+      <Border Padding="15,6">
+      <Grid>
       <Grid.ColumnDefinitions>
         <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="*"/>
         <ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
 
-      <Grid Grid.Column="0" Width="22" Height="22" Margin="0,0,14,0">
-        <Ellipse x:Name="PulseRing" Width="22" Height="22" Fill="#FF6B7280" Opacity="0.0">
+      <Grid Grid.Column="0" Width="22" Height="22" Margin="0,0,10,0">
+        <Ellipse x:Name="PulseRing" Width="22" Height="22" Fill="#FF8E8E93" Opacity="0.0">
           <Ellipse.RenderTransform>
             <ScaleTransform x:Name="PulseScale" ScaleX="1" ScaleY="1"/>
           </Ellipse.RenderTransform>
           <Ellipse.RenderTransformOrigin>0.5,0.5</Ellipse.RenderTransformOrigin>
         </Ellipse>
-        <Ellipse x:Name="StatusDot" Width="12" Height="12"
+        <!--
+           
+
+           
+           " " " 
+           " 
+            DropShadowEffect   +  
+        -->
+        <Ellipse x:Name="StatusDot" Width="11" Height="11"
                  HorizontalAlignment="Center" VerticalAlignment="Center"
-                 Fill="#FF6B7280"/>
+                 Fill="#FF8E8E93">
+          <Ellipse.Effect>
+            <DropShadowEffect x:Name="StatusDotGlow" Color="#FF22D3EE" BlurRadius="9"
+                              ShadowDepth="0" Opacity="0"/>
+          </Ellipse.Effect>
+        </Ellipse>
       </Grid>
 
       <StackPanel Grid.Column="1" VerticalAlignment="Center">
@@ -257,29 +329,29 @@ $xaml = @'
             <ColumnDefinition Width="Auto"/>
           </Grid.ColumnDefinitions>
           <TextBlock Grid.Column="0" x:Name="StateText" Text="mcode"
-                     Foreground="#FFF5F5F7" FontSize="14" FontWeight="SemiBold"
+                     Foreground="#FFFFFFFF" FontSize="16" FontWeight="SemiBold"
                      TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
           <TextBlock Grid.Column="1" x:Name="ElapsedText" Text=""
-                     Foreground="#FF6B7280" FontSize="11"
-                     VerticalAlignment="Center" Margin="8,0,0,0"
+                     Foreground="#4DEBEBF5" FontSize="11"
+                     VerticalAlignment="Center" Margin="6,0,0,0"
                      FontFamily="Consolas, Segoe UI"/>
           <!-- 5h usage badge: filled in by the detector, -1 means unknown -->
           <TextBlock Grid.Column="2" x:Name="Usage5hText" Text=""
-                     Foreground="#FF6B7280" FontSize="11"
-                     VerticalAlignment="Center" Margin="8,0,0,0"
+                     Foreground="#4DEBEBF5" FontSize="11"
+                     VerticalAlignment="Center" Margin="6,0,0,0"
                      FontFamily="Consolas, Segoe UI"
                      ToolTip="mmx 5h usage"/>
         </Grid>
         <TextBlock x:Name="MessageText" Text="Waiting for task"
-                   Foreground="#FF9A9AA3" FontSize="11" Margin="0,1,0,0"
+                   Foreground="#99EBEBF5" FontSize="13" Margin="0,1,0,0"
                    TextTrimming="CharacterEllipsis" MaxWidth="240"/>
         <!--  
              - progress=0..100 determinate  ProgressFill ScaleX  bright cyan  
              - progress=-1   state   active indeterminate  ProgressIndeterminate  cyan  
              -   -->
         <Grid x:Name="ProgressBar" Height="8" Margin="0,2,0,0" Visibility="Collapsed">
-          <Border Background="#44FFFFFF" CornerRadius="4"/>
-          <Border x:Name="ProgressFill" Background="#FF22D3EE" CornerRadius="4"
+          <Border x:Name="ProgressTrack" Background="#26FFFFFF" CornerRadius="4"/>
+          <Border x:Name="ProgressFill" Background="#FF0A84FF" CornerRadius="4"
                   HorizontalAlignment="Stretch" Visibility="Collapsed">
             <Border.RenderTransform>
               <ScaleTransform x:Name="ProgressScale" ScaleX="0" ScaleY="1"/>
@@ -288,7 +360,7 @@ $xaml = @'
           </Border>
           <Grid x:Name="ProgressIndeterminate" Visibility="Collapsed" ClipToBounds="True">
             <Rectangle x:Name="ProgressShimmer" Width="130" HorizontalAlignment="Left"
-                       Fill="#FF22D3EE">
+                       Fill="#FF0A84FF">
               <Rectangle.OpacityMask>
                 <LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5">
                   <GradientStop Color="#00000000" Offset="0"/>
@@ -305,8 +377,10 @@ $xaml = @'
       </StackPanel>
 
       <TextBlock Grid.Column="2" x:Name="ActionIcon" Text=""
-                 Foreground="#FF9A9AA3" FontSize="13" Margin="14,0,0,0"
+                 Foreground="#99EBEBF5" FontSize="15" Margin="10,0,0,0"
                  VerticalAlignment="Center"/>
+      </Grid>
+      </Border>
     </Grid>
   </Border>
 
@@ -319,11 +393,32 @@ $xaml = @'
 
      row 0  
      
+
+      Liquid Glass  +   +   +
+     ** ** HIG  " " 
+     
+
+     " " 
+    New-RoundedRectGeometry   Smooth  
+
+      Border.Padding   SessionRows   Margin 
+     
   -->
-  <Border x:Name="SessionPanel" Grid.Row="1" Visibility="Collapsed"
-          CornerRadius="12" Background="#F21A1A20" BorderBrush="#33FFFFFF"
-          BorderThickness="1" Padding="10,6" Margin="0,14,0,0">
-    <StackPanel x:Name="SessionRows"/>
+  <Border x:Name="SessionPanel" Grid.Row="1" Visibility="Collapsed" Margin="0,14,0,0">
+    <Border.Effect>
+      <DropShadowEffect x:Name="PanelShadow" Color="Black" Opacity="0.5" BlurRadius="34" ShadowDepth="10"/>
+    </Border.Effect>
+    <Grid x:Name="PanelGlass" Background="#FF16181D">
+      <!--   Canvas  Auto 
+             PillMaterial   -->
+      <Canvas x:Name="PanelMaterial">
+        <Path x:Name="PanelTint" Fill="Transparent" Stroke="Transparent"/>
+        <Path x:Name="PanelGrain" Fill="Transparent" Stroke="Transparent"/>
+        <Path x:Name="PanelRim" Fill="Transparent" Stroke="Transparent" StrokeThickness="1"/>
+        <Path x:Name="PanelEdge" Fill="Transparent" Stroke="Transparent" StrokeThickness="1"/>
+      </Canvas>
+      <StackPanel x:Name="SessionRows" Margin="14,10"/>
+    </Grid>
   </Border>
   </Grid>
 </Window>
@@ -348,6 +443,7 @@ $messageText   = $window.FindName('MessageText')
 $actionIcon    = $window.FindName('ActionIcon')
 $pill          = $window.FindName('Pill')
 $progressBar          = $window.FindName('ProgressBar')
+$progressTrack        = $window.FindName('ProgressTrack')
 $progressFill         = $window.FindName('ProgressFill')
 $progressScale        = $window.FindName('ProgressScale')
 $progressIndeterminate = $window.FindName('ProgressIndeterminate')
@@ -355,20 +451,737 @@ $progressShimmer      = $window.FindName('ProgressShimmer')
 $progressShimmerTransform = $window.FindName('ProgressShimmerTransform')
 $elapsedText          = $window.FindName('ElapsedText')
 $usage5hText          = $window.FindName('Usage5hText')
+$statusDotGlow        = $window.FindName('StatusDotGlow')
 # session pill
 $script:sessionRowsPanel = $window.FindName('SessionPanel')
 $script:sessionRows      = $window.FindName('SessionRows')
 $script:sessionListRow  = $window.FindName('SessionListRow')
+
+try {
+  $pillBorder = $window.FindName('Pill')
+  if ($pillBorder) { $pillBorder.Margin = New-Object System.Windows.Thickness($script:glassMargin) }
+  $panelBorder = $window.FindName('SessionPanel')
+  if ($panelBorder) { $panelBorder.Margin = New-Object System.Windows.Thickness($script:glassMargin, 6, $script:glassMargin, $script:glassMarginPanelBottom) }
+} catch {
+  Dbg "GLASS MARGIN FAIL: $($_.Exception.Message)"
+}
+
+# DrawingBrush
+# - DrawingBrush WPF DPI
+function New-GrainBrush {
+  param([int]$Tile = 64, [int]$Seed = 7, [int]$Dots = 260, [string]$Color = '#FFFFFFFF')
+  try {
+    $rnd = [Random]::new($Seed)
+    $geo = New-Object System.Windows.Media.GeometryGroup
+    for ($i = 0; $i -lt $Dots; $i++) {
+      $x = $rnd.NextDouble() * $Tile
+      $y = $rnd.NextDouble() * $Tile
+      $w = 0.5 + $rnd.NextDouble() * 1.1
+      $rect = New-Object System.Windows.Rect $x, $y, $w, $w
+      $geo.Children.Add((New-Object System.Windows.Media.RectangleGeometry $rect)) | Out-Null
+    }
+    $drawing = New-Object System.Windows.Media.GeometryDrawing
+    $drawing.Geometry = $geo
+    $drawing.Brush = (New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString($Color)))
+    $brush = New-Object System.Windows.Media.DrawingBrush
+    $brush.Drawing = $drawing
+    $brush.TileMode = [System.Windows.Media.TileMode]::Tile
+    $brush.ViewportUnits = [System.Windows.Media.BrushMappingMode]::Absolute
+    $brush.Viewport = New-Object System.Windows.Rect 0, 0, $Tile, $Tile
+    $brush.Stretch = [System.Windows.Media.Stretch]::None
+    return $brush
+  } catch {
+    Dbg "GRAIN FAIL: $($_.Exception.Message)"
+    return $null
+  }
+}
+
+# Update-GlassInk
+$script:grainBrushDark  = $null
+$script:grainBrushLight = $null
+try {
+  $script:grainBrushDark  = New-GrainBrush -Color '#FFFFFFFF'
+  $script:grainBrushLight = New-GrainBrush -Color '#FF000000'
+  $grain = $script:grainBrushDark
+  if ($grain) {
+    foreach ($name in @('PillGrain', 'PanelGrain')) {
+      $target = $window.FindName($name)
+      if ($target) { $target.Fill = $grain; $target.Opacity = 0.015 }
+    }
+    Dbg 'GRAIN: applied'
+  }
+} catch {
+  Dbg "GRAIN APPLY FAIL: $($_.Exception.Message)"
+}
+
+# Liquid Glass
+# - Apple HIG "Materials" Liquid Glass / regular 2025-09
+# - Apple HIG "Color" Liquid Glass color 2025-12
+# - WWDC25 "Meet Liquid Glass" session 219
+# 1. ** **
+# 2. **regular = + **
+# 3. ** ** specular
+# 4. ** **
+# HIG larger elements appear more opaque
+# Windows
+# - layered AllowsTransparency=True
+# DWM backdrop SetWindowCompositionAttribute(ACCENT_ENABLE_BLURBEHIND)
+# - layered DWMWA_SYSTEMBACKDROP_TYPE WPF
+# dwm-probe
+# 1. ** ** SetWindowDisplayAffinity
+# WDA_EXCLUDEFROMCAPTURE
+# 2. ** ** PointToScreen WPF
+# Left/Top DIP 100%
+# " 1/4 + BlurEffect + " " "
+$script:glassBackdrop = $null
+$script:glassLuminance = 0.0
+$script:glassLastUpdate = [DateTime]::MinValue
+$script:glassDragStamp = [DateTime]::MinValue
+
+# r = /2
+# " " Smooth=1 n=5
+$script:glassRadiusPill  = 35.0
+$script:glassRadiusPanel = 18.0
+$script:glassSmoothPanel = 1.0
+
+# WWDC25
+$script:glassRefreshMs = 2500
+
+function Get-WindowDeviceScale {
+ # 100 DIP
+  try {
+    $p0 = $window.PointToScreen([System.Windows.Point]::new(0, 0))
+    $p1 = $window.PointToScreen([System.Windows.Point]::new(100, 0))
+    $sx = [Math]::Abs($p1.X - $p0.X) / 100.0
+    $sy = [Math]::Abs($p1.Y - $p0.Y) / 100.0
+    if ($sx -lt 0.1 -or $sx -gt 10) { $sx = 1.0 }
+    if ($sy -lt 0.1 -or $sy -gt 10) { $sy = 1.0 }
+    return @($sx, $sy)
+  } catch {
+    return @(1.0, 1.0)
+  }
+}
+
+function New-RoundedRectGeometry {
+ # Smooth " " 0 = 1 =
+ # n=5 iOS squircle 24
+ # 1x
+ # Inset
+  param([double]$W, [double]$H, [double]$R, [double]$Smooth = 0.0, [double]$Inset = 0.0, [int]$Steps = 24)
+  try {
+    $w2 = $W - 2 * $Inset
+    $h2 = $H - 2 * $Inset
+    if ($w2 -le 2 -or $h2 -le 2) { return $null }
+    $r = [Math]::Min($R - $Inset, [Math]::Min($w2, $h2) / 2.0)
+    if ($r -le 0.5) {
+      $rect = New-Object System.Windows.Rect $Inset, $Inset, $w2, $h2
+      $g = New-Object System.Windows.Media.RectangleGeometry $rect
+      $g.Freeze()
+      return $g
+    }
+ # e = 1 e = 2/n n=5 e = 0.4
+    $e = 1.0
+    if ($Smooth -gt 0.01) {
+      $n = 2.0 + 3.0 * [Math]::Min(1.0, $Smooth)
+      $e = 2.0 / $n
+    }
+    $half = [Math]::PI / 2.0
+    $pts = New-Object 'System.Collections.Generic.List[System.Windows.Point]'
+    for ($i = 0; $i -le $Steps; $i++) {
+      $t = $half * $i / $Steps
+      $s = [Math]::Pow([Math]::Sin($t), $e)
+      $c = [Math]::Pow([Math]::Cos($t), $e)
+      $pts.Add((New-Object System.Windows.Point ($Inset + $w2 - $r + $r * $s), ($Inset + $r - $r * $c)))
+    }
+    for ($i = 0; $i -le $Steps; $i++) {
+      $t = $half * $i / $Steps
+      $s = [Math]::Pow([Math]::Sin($t), $e)
+      $c = [Math]::Pow([Math]::Cos($t), $e)
+      $pts.Add((New-Object System.Windows.Point ($Inset + $w2 - $r + $r * $c), ($Inset + $h2 - $r + $r * $s)))
+    }
+    for ($i = 0; $i -le $Steps; $i++) {
+      $t = $half * $i / $Steps
+      $s = [Math]::Pow([Math]::Sin($t), $e)
+      $c = [Math]::Pow([Math]::Cos($t), $e)
+      $pts.Add((New-Object System.Windows.Point ($Inset + $r - $r * $s), ($Inset + $h2 - $r + $r * $c)))
+    }
+ # IsClosed
+    for ($i = 0; $i -lt $Steps; $i++) {
+      $t = $half * $i / $Steps
+      $s = [Math]::Pow([Math]::Sin($t), $e)
+      $c = [Math]::Pow([Math]::Cos($t), $e)
+      $pts.Add((New-Object System.Windows.Point ($Inset + $r - $r * $c), ($Inset + $r - $r * $s)))
+    }
+    $fig = New-Object System.Windows.Media.PathFigure
+    $fig.StartPoint = $pts[0]
+    $fig.IsClosed = $true
+    for ($i = 1; $i -lt $pts.Count; $i++) {
+      $seg = New-Object System.Windows.Media.LineSegment $pts[$i], $pts[$i]
+      $fig.Segments.Add($seg) | Out-Null
+    }
+    $geo = New-Object System.Windows.Media.PathGeometry
+    $geo.Figures.Add($fig) | Out-Null
+    $geo.Freeze()
+    return $geo
+  } catch {
+    Dbg "ROUNDRECT FAIL: $($_.Exception.Message)"
+    return $null
+  }
+}
+
+function New-GlassStop {
+  param([System.Windows.Media.Color]$Color, [double]$Offset, [double]$Alpha)
+  $a = [int][Math]::Max(0, [Math]::Min(255, [Math]::Round($Alpha * 255)))
+  $s = New-Object System.Windows.Media.GradientStop
+  $s.Color = [System.Windows.Media.Color]::FromArgb($a, $Color.R, $Color.G, $Color.B)
+  $s.Offset = $Offset
+  return $s
+}
+
+function Measure-Luminance {
+ # 0..1
+  param($Bitmap)
+  try {
+    if (-not $Bitmap) { return 0.0 }
+    $w = $Bitmap.PixelWidth
+    $h = $Bitmap.PixelHeight
+    if ($w -le 0 -or $h -le 0) { return 0.0 }
+    $stride = $w * 4
+    $buf = New-Object byte[] ($stride * $h)
+    $Bitmap.CopyPixels($buf, $stride, 0)
+ # 4 1 Rec.709
+    $sum = 0.0
+    $n = 0
+    for ($i = 0; $i -lt $buf.Length; $i += 16) {
+      $b = $buf[$i]; $g = $buf[$i + 1]; $r = $buf[$i + 2]
+      $sum += (0.2126 * $r + 0.7152 * $g + 0.0722 * $b)
+      $n++
+    }
+    if ($n -eq 0) { return 0.0 }
+    $v = $sum / $n / 255.0
+    if ($v -lt 0.0) { $v = 0.0 }
+    if ($v -gt 1.0) { $v = 1.0 }
+    return [double]$v
+  } catch {
+    return 0.0
+  }
+}
+
+function New-GlassCapture {
+ # @{ Brush = ImageBrush; Luminance = 0..1 } $null
+  param($Element)
+  try {
+    if (-not $Element) { return $null }
+    $w = $Element.ActualWidth
+    $h = $Element.ActualHeight
+    if ($w -lt 8 -or $h -lt 8) { return $null }
+    $scale = Get-WindowDeviceScale
+    $sx = [double]$scale[0]; $sy = [double]$scale[1]
+    $origin = $Element.PointToScreen([System.Windows.Point]::new(0, 0))
+    $devW = [int][Math]::Ceiling($w * $sx)
+    $devH = [int][Math]::Ceiling($h * $sy)
+    if ($devW -lt 8 -or $devH -lt 8) { return $null }
+    if ($devW -gt 4000 -or $devH -gt 4000) { return $null }
+
+    $bmp = $null
+    $src = $null
+    $ms = $null
+    try {
+      $bmp = New-Object System.Drawing.Bitmap $devW, $devH
+      $g = [System.Drawing.Graphics]::FromImage($bmp)
+ # CopyFromScreen DC
+      $g.CopyFromScreen([int]$origin.X, [int]$origin.Y, 0, 0, (New-Object System.Drawing.Size $devW, $devH))
+      $g.Dispose()
+ # System.Drawing.Bitmap -> WPF BitmapSource
+ # MemoryStream Imaging.CreateBitmapSourceFromHBitmap
+ # System.Windows.Media.Imaging.Imaging .NET Framework
+ # internal PowerShell [System.Windows.Media.Imaging.Imaging]
+ # " " .NET Core PNG
+      $ms = New-Object System.IO.MemoryStream
+      $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+      $ms.Position = 0
+      $src = New-Object System.Windows.Media.Imaging.BitmapImage
+      $src.BeginInit()
+      $src.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+      $src.StreamSource = $ms
+      $src.EndInit()
+      $src.Freeze()
+    } finally {
+      if ($ms) { $ms.Dispose() }
+      if ($bmp) { $bmp.Dispose() }
+    }
+
+ # ** ** 24px 1/4 6
+ # 9 70px 17px 9px
+    $scaleDown = 4
+    $smallW = [int][Math]::Max(4, [int]($devW / $scaleDown))
+    $smallH = [int][Math]::Max(4, [int]($devH / $scaleDown))
+
+    $img = New-Object System.Windows.Controls.Image
+    $img.Source = $src
+    $img.Width = $smallW
+    $img.Height = $smallH
+    $img.Stretch = [System.Windows.Media.Stretch]::Fill
+    $blur = New-Object System.Windows.Media.Effects.BlurEffect
+    $blur.Radius = 6
+    $img.Effect = $blur
+ # Measure + Arrange Render
+ # RenderTargetBitmap.Render() " "
+ # Image Render
+ # 0.0 0.35
+    $img.Measure((New-Object System.Windows.Size($smallW, $smallH)))
+    $img.Arrange((New-Object System.Windows.Rect(0, 0, $smallW, $smallH)))
+
+    $rtb = New-Object System.Windows.Media.Imaging.RenderTargetBitmap $smallW, $smallH, 96, 96, ([System.Windows.Media.PixelFormats]::Pbgra32)
+    $rtb.Render($img)
+
+    $brush = New-Object System.Windows.Media.ImageBrush $rtb
+    $brush.Stretch = [System.Windows.Media.Stretch]::Fill
+    $brush.TileMode = [System.Windows.Media.TileMode]::None
+    return @{ Brush = $brush; Luminance = (Measure-Luminance $rtb) }
+  } catch {
+    Dbg "GLASS CAPTURE FAIL: $($_.Exception.Message)"
+    return $null
+  }
+}
+
+function Update-GlassGeometry {
+  param([string]$Prefix, [double]$Radius, [double]$Smooth)
+  try {
+    $glass = $window.FindName("${Prefix}Glass")
+    if (-not $glass) { return $false }
+    $w = $glass.ActualWidth
+    $h = $glass.ActualHeight
+    if ($w -lt 8 -or $h -lt 8) { return $false }
+    $geo     = New-RoundedRectGeometry $w $h $Radius $Smooth 0
+    $geoRim  = New-RoundedRectGeometry $w $h $Radius $Smooth 1.25
+    $geoEdge = New-RoundedRectGeometry $w $h $Radius $Smooth 3.5
+    if (-not $geo) { return $false }
+ # Clip Border CornerRadius
+    $glass.Clip = $geo
+    $tint  = $window.FindName("${Prefix}Tint");  if ($tint)  { $tint.Data  = $geo }
+    $grain = $window.FindName("${Prefix}Grain"); if ($grain) { $grain.Data = $geo }
+    $rim   = $window.FindName("${Prefix}Rim");   if ($rim)   { $rim.Data = $geoRim;  $rim.StrokeThickness = 1.5 }
+    $edge  = $window.FindName("${Prefix}Edge");  if ($edge)  { $edge.Data = $geoEdge; $edge.StrokeThickness = 1.5 }
+ # Canvas Canvas Canvas
+ # Path (0,0) Path Data
+    foreach ($layer in @($tint, $grain, $rim, $edge)) {
+      if (-not $layer) { continue }
+      [System.Windows.Controls.Canvas]::SetLeft($layer, 0)
+      [System.Windows.Controls.Canvas]::SetTop($layer, 0)
+    }
+    return $true
+  } catch {
+    Dbg "GLASS GEOMETRY FAIL: $($_.Exception.Message)"
+    return $false
+  }
+}
+
+# HIG "Materials" Liquid Glass regular " + ** **
+# " adjusts the luminosity of background content to maintain
+# legibility of text
+# 60% 2.7:1 "3h25m 99%" 30% 1.7:1
+# " " ** ** macOS Dock
+# dark + ** **
+# light +
+# ** dark** " " **
+# 0.115 #1D1D1D macOS Dynamic Island
+# ** ** auto 0.60
+# 0.58
+# config.json materialPole dark / light / auto
+# Update-GlassInk
+# $script:glassPole $script:glassPanelPole
+# HIG "Materials"
+$script:glassPole = 'dark'
+$script:glassPanelPole = 'dark'
+
+# smoke.mjs /
+# ** ** 0..1 sRGB WCAG
+# HIG "Materials" regular "blurs and **adjusts the luminosity** of
+# background content to maintain legibility of text" "
+# " " macOS Dynamic Island
+# " " 106 #6A6A6A
+# 0.115 29 #1D1D1D macOS #1C1C1E
+# 16.9:1 0.90 230 #E6E6E6 12.7:1
+$script:glassTargetByteDark  = 0.115
+$script:glassTargetByteLight = 0.90
+# = HIG: larger elements appear more opaque
+$script:glassThickDark  = 0.25
+$script:glassThickLight = 0.25
+# ** ** auto 0.60
+# 0.58
+$script:glassPoleLightOn  = 0.60
+$script:glassPoleLightOff = 0.58
+
+# HIG "Color" macOS
+# ** ** macOS label / secondaryLabel / tertiaryLabel
+# iOS iOS "
+# " iOS
+# 3
+$script:glassInkDark = @{
+  Primary   = '#FFFFFFFF'   # label
+  Secondary = '#99EBEBF5'   # secondaryLabel 60%
+  Tertiary  = '#4DEBEBF5'   # tertiaryLabel 30%
+  Muted     = '#FF8B93A1'
+  Dim       = '#FF8E8E93'   # systemGray
+  Warn      = '#FFFF9F0A'   # systemOrange
+  Danger    = '#FFFF453A'   # systemRed
+  Track     = '#26FFFFFF'
+  Accent    = '#FF0A84FF'   # systemBlue (dark)
+  Hover     = '#FFFF453A'
+}
+
+$script:glassInkLight = @{
+  Primary   = '#D9000000' # macOS label: 85%
+  Secondary = '#8C000000' # secondaryLabel: 55%
+  Tertiary  = '#4D000000' # tertiaryLabel: 30%
+  Muted     = '#FF6C6C70'
+  Dim       = '#FF6C6C70'
+  Warn      = '#FFC93400'   # systemOrange (light)
+  Danger    = '#FFD70015'   # systemRed (light)
+  Track     = '#1A000000'
+  Accent    = '#FF007AFF'   # systemBlue (light)
+  Hover     = '#FFFF3B30'   # systemRed (light)
+}
+
+# HIG "Color" light
+# dark ** ** label
+$stateMapLight = @{
+  idle     = @{ dot='#FF6C6C70'; ring='#FF6C6C70'; label='mcode';             icon='' }
+  thinking = @{ dot='#FFA88700'; ring='#FFA88700'; label='mcode - thinking';     icon='' }
+  working  = @{ dot='#FF007AFF'; ring='#FF007AFF'; label='mcode - working';     icon='*' }
+  waiting  = @{ dot='#FFC93400'; ring='#FFC93400'; label='mcode - waiting';  icon='?' }
+  done     = @{ dot='#FF248A3D'; ring='#FF248A3D'; label='mcode - done';     icon='+' }
+  error    = @{ dot='#FFD70015'; ring='#FFD70015'; label='mcode - error';       icon='x' }
+}
+
+$familyMapLight = @{
+  shell  = '#FF248A3D' # bash / shell
+  read   = '#FF007AFF' # read
+  write  = '#FFA88700' # edit / write
+  search = '#FF8944AB' # grep / glob
+  task   = '#FF007E8A' # task
+  web    = '#FFD6246D' # web_search/fetch
+  plan   = '#FF8E8E93' # todowrite
+}
+
+function Get-GlassInk {
+  if ($script:glassPole -eq 'light') { return $script:glassInkLight }
+  return $script:glassInkDark
+}
+
+function Get-PanelInk {
+  if ($script:glassPanelPole -eq 'light') { return $script:glassInkLight }
+  return $script:glassInkDark
+}
+
+function Get-GlassStateMap {
+  if ($script:glassPole -eq 'light') { return $stateMapLight }
+  return $stateMap
+}
+
+function Get-PanelStateMap {
+  if ($script:glassPanelPole -eq 'light') { return $stateMapLight }
+  return $stateMap
+}
+
+function Get-GlassFamilyMap {
+  if ($script:glassPole -eq 'light') { return $familyMapLight }
+  return $familyMap
+}
+
+function Resolve-GlassPole {
+ # auto 0.60 0.58
+ # - 4.5:1 0.227
+ # 0.58
+ # - 0.115
+ # 16.9:1
+ # 0.60 / 0.58 ** **
+ # $Current ** **
+ # materialPole = dark / light
+ # bug
+  param([double]$L, [string]$Current)
+  $forced = ''
+  try { $forced = [string]$cfg.materialPole } catch { $forced = '' }
+  if ($forced -eq 'dark' -or $forced -eq 'light') { return $forced }
+  if ($Current -eq 'light') {
+    if ($L -lt $script:glassPoleLightOff) { return 'dark' }
+  } else {
+    if ($L -gt $script:glassPoleLightOn) { return 'light' }
+  }
+  return $Current
+}
+
+function Update-GlassGrain {
+  param([string]$Name, [string]$Pole)
+  try {
+    $gb = $script:grainBrushDark
+    if ($Pole -eq 'light') { $gb = $script:grainBrushLight }
+    if (-not $gb) { return }
+    $target = $window.FindName($Name)
+    if ($target) { $target.Fill = $gb }
+  } catch {
+    Dbg "GLASS GRAIN INK FAIL: $($_.Exception.Message)"
+  }
+}
+
+function Update-GlassInk {
+ # Update-SessionRowsInk
+  $ink = Get-GlassInk
+  try {
+    if ($script:stateText)       { $script:stateText.Foreground         = C $ink.Primary }
+    if ($script:messageText)     { $script:messageText.Foreground       = C $ink.Secondary }
+    if ($script:actionIcon)      { $script:actionIcon.Foreground        = C $ink.Secondary }
+    if ($script:elapsedText)     { $script:elapsedText.Foreground       = C $ink.Tertiary }
+    if ($script:usage5hText)     { $script:usage5hText.Foreground       = C $ink.Tertiary }
+    if ($script:progressTrack)   { $script:progressTrack.Background     = C $ink.Track }
+    if ($script:progressFill)    { $script:progressFill.Background      = C $ink.Accent }
+    if ($script:progressShimmer) { $script:progressShimmer.Fill         = C $ink.Accent }
+  } catch {
+    Dbg "GLASS INK FAIL: $($_.Exception.Message)"
+  }
+  Update-GlassGrain 'PillGrain' $script:glassPole
+}
+
+function Update-GlassPanelGrain {
+  Update-GlassGrain 'PanelGrain' $script:glassPanelPole
+}
+
+function Update-SessionRowsInk {
+ # pending
+  try {
+    if (-not $script:sessionRowsPanel) { return }
+    if ($script:sessionRowsPanel.Visibility -ne [System.Windows.Visibility]::Visible) { return }
+    Show-SessionList | Out-Null
+  } catch {
+    Dbg "GLASS ROWS REINK FAIL: $($_.Exception.Message)"
+  }
+}
+
+function Apply-GlassMaterial {
+ # HIG "the amount of tint shifts to keep buttons legible"
+  param([string]$Prefix, [double]$Luminance, [bool]$Thick)
+  try {
+    $L = [Math]::Max(0.0, [Math]::Min(1.0, $Luminance))
+
+    $isPanel = ($Prefix -eq 'Panel')
+    $curPole = $script:glassPole
+    if ($isPanel) { $curPole = $script:glassPanelPole }
+    $pole = Resolve-GlassPole $L $curPole
+    if ($isPanel) {
+      if ($pole -ne $script:glassPanelPole) {
+        $script:glassPanelPole = $pole
+        Update-GlassPanelGrain
+ # Show-SessionList Update-GlassBackdrop
+ # Update-GlassBackdrop
+        $script:glassRowsNeedReink = $true
+      }
+    } else {
+      if ($pole -ne $script:glassPole) {
+        $script:glassPole = $pole
+        Update-GlassInk
+      }
+    }
+
+    $dark  = [System.Windows.Media.Color]::FromArgb(255, 0, 0, 0)
+    $white = [System.Windows.Media.Color]::FromArgb(255, 255, 255, 255)
+
+ # HIG "Materials" regular "blurs and **adjusts the luminosity**
+ # of background content to maintain legibility of text" "
+ # -> veil = 1 - target / L
+ # -> lift = (target - L) / (1 - L)
+ # " " macOS Dynamic Island
+ # " " 106 #6A6A6A
+ # ** ** $thick [bool]$Thick PowerShell
+ # $thick = 0.25
+ # $true (1.0 - $thick) 0 0
+ # veil 1 "
+ # " $thickMix
+    $target = $script:glassTargetByteDark
+    $thickMix = $script:glassThickDark
+    if ($pole -eq 'light') {
+      $target = $script:glassTargetByteLight
+      $thickMix = $script:glassThickLight
+    }
+ # = HIG larger elements appear more opaque
+    if ($Thick) {
+      if ($pole -eq 'light') { $target = $target + (1.0 - $target) * $thickMix }
+      else { $target = $target * (1.0 - $thickMix) }
+    }
+    $veil = 0.0
+    $lift = 0.0
+    if ($L -gt $target) {
+      $veil = 1.0 - ($target / $L)
+    } else {
+      $lift = ($target - $L) / (1.0 - $L)
+    }
+
+    $tintBrush = New-Object System.Windows.Media.LinearGradientBrush
+    $tintBrush.StartPoint = New-Object System.Windows.Point 0, 0
+    $tintBrush.EndPoint   = New-Object System.Windows.Point 0, 1
+    if ($veil -gt 0.0) {
+ # rim
+      $tintBrush.GradientStops.Add((New-GlassStop $dark  0.00 ($veil * 0.98))) | Out-Null
+      $tintBrush.GradientStops.Add((New-GlassStop $dark  0.34 ($veil))) | Out-Null
+      $tintBrush.GradientStops.Add((New-GlassStop $dark  0.70 ($veil * 1.03))) | Out-Null
+      $tintBrush.GradientStops.Add((New-GlassStop $dark  1.00 ($veil * 1.06))) | Out-Null
+    } else {
+      $tintBrush.GradientStops.Add((New-GlassStop $white 0.00 ($lift * 1.00))) | Out-Null
+      $tintBrush.GradientStops.Add((New-GlassStop $white 0.30 ($lift * 0.88))) | Out-Null
+      $tintBrush.GradientStops.Add((New-GlassStop $white 0.68 ($lift * 0.76))) | Out-Null
+      $tintBrush.GradientStops.Add((New-GlassStop $white 1.00 ($lift * 0.64))) | Out-Null
+    }
+    $tintPath = $window.FindName("${Prefix}Tint")
+    if ($tintPath) { $tintPath.Fill = $tintBrush }
+
+ # specular
+    $rimBrush = New-Object System.Windows.Media.RadialGradientBrush
+    $rimBrush.Center = New-Object System.Windows.Point 0.5, 0
+    $rimBrush.RadiusX = 0.70
+    $rimBrush.RadiusY = 1.30
+    if ($pole -eq 'light') {
+      $rimBrush.GradientStops.Add((New-GlassStop $dark 0.00 0.22)) | Out-Null
+      $rimBrush.GradientStops.Add((New-GlassStop $dark 0.45 0.07)) | Out-Null
+      $rimBrush.GradientStops.Add((New-GlassStop $dark 0.80 0.02)) | Out-Null
+      $rimBrush.GradientStops.Add((New-GlassStop $dark 1.00 0.00)) | Out-Null
+    } else {
+      $rimBrush.GradientStops.Add((New-GlassStop $white 0.00 0.55)) | Out-Null
+      $rimBrush.GradientStops.Add((New-GlassStop $white 0.35 0.24)) | Out-Null
+      $rimBrush.GradientStops.Add((New-GlassStop $white 0.75 0.07)) | Out-Null
+      $rimBrush.GradientStops.Add((New-GlassStop $white 1.00 0.02)) | Out-Null
+    }
+    $rimPath = $window.FindName("${Prefix}Rim")
+    if ($rimPath) { $rimPath.Stroke = $rimBrush }
+
+    $edgeBottom = 0.46
+    if ($pole -eq 'light') { $edgeBottom = 0.30 }
+    $edgeBrush = New-Object System.Windows.Media.LinearGradientBrush
+    $edgeBrush.StartPoint = New-Object System.Windows.Point 0, 0
+    $edgeBrush.EndPoint   = New-Object System.Windows.Point 0, 1
+    $edgeBrush.GradientStops.Add((New-GlassStop $dark 0.00 0.00)) | Out-Null
+    $edgeBrush.GradientStops.Add((New-GlassStop $dark 0.58 0.00)) | Out-Null
+    $edgeBrush.GradientStops.Add((New-GlassStop $dark 1.00 $edgeBottom)) | Out-Null
+    $edgePath = $window.FindName("${Prefix}Edge")
+    if ($edgePath) { $edgePath.Stroke = $edgeBrush }
+
+ # WWDC25
+    $shadow = $window.FindName("${Prefix}Shadow")
+    if ($shadow) {
+      if ($pole -eq 'light') {
+        if ($Thick) { $shadow.Opacity = [Math]::Min(0.46, 0.20 + 0.18 * $L); $shadow.BlurRadius = 44; $shadow.ShadowDepth = 12 }
+        else { $shadow.Opacity = [Math]::Min(0.38, 0.16 + 0.16 * $L); $shadow.BlurRadius = 32; $shadow.ShadowDepth = 8 }
+      } else {
+        if ($Thick) { $shadow.Opacity = [Math]::Min(0.72, 0.36 + 0.32 * $L) }
+        else { $shadow.Opacity = [Math]::Min(0.62, 0.30 + 0.28 * $L) }
+      }
+    }
+ # 2.5s
+    if ($script:glassLoggedPoles[$Prefix] -ne $pole) {
+      $script:glassLoggedPoles[$Prefix] = $pole
+      Dbg ("GLASS " + $Prefix.ToUpper() + " POLE -> " + $pole)
+    }
+    if ($null -eq $script:glassLoggedLum[$Prefix] -or [Math]::Abs($L - $script:glassLoggedLum[$Prefix]) -gt 0.12) {
+      $script:glassLoggedLum[$Prefix] = $L
+      Dbg ("GLASS " + $Prefix + " L=" + [Math]::Round($L, 3) + " veil=" + [Math]::Round($veil, 3) + " lift=" + [Math]::Round($lift, 3) + " pole=" + $pole)
+    }
+    return $true
+  } catch {
+    Dbg "GLASS MATERIAL FAIL: $($_.Exception.Message)"
+    return $false
+  }
+}
+
+function Update-GlassBackdrop {
+  try {
+    $pillGlass = $window.FindName('PillGlass')
+    if (-not $pillGlass) { return $false }
+    $panelGlass = $window.FindName('PanelGlass')
+
+    $hwnd = [IntPtr]::Zero
+    $excluded = $false
+    try {
+      $hwnd = [System.Windows.Interop.WindowInteropHelper]::new($window).Handle
+      if ($hwnd -and [WinAPI]::SetWindowDisplayAffinity($hwnd, 0x00000011)) { $excluded = $true }
+    } catch {}
+
+    try {
+      $pillCap = New-GlassCapture $pillGlass
+      if ($pillCap) {
+        $pillGlass.Background = $pillCap.Brush
+        $script:glassBackdrop = $pillCap.Brush
+        $script:glassLuminance = $pillCap.Luminance
+        [void](Apply-GlassMaterial 'Pill' $pillCap.Luminance $false)
+      }
+      if ($panelGlass -and $panelGlass.Visibility -eq [System.Windows.Visibility]::Visible) {
+        $panelCap = New-GlassCapture $panelGlass
+        if ($panelCap) {
+          $panelGlass.Background = $panelCap.Brush
+          [void](Apply-GlassMaterial 'Panel' $panelCap.Luminance $true)
+        }
+      }
+    } finally {
+      if ($excluded -and $hwnd) { try { [void][WinAPI]::SetWindowDisplayAffinity($hwnd, 0) } catch {} }
+    }
+    $script:glassLastUpdate = [DateTime]::UtcNow
+ # Show-SessionList Show-SessionList
+ # Update-GlassBackdrop " "
+    if ($script:glassRowsNeedReink) {
+      $script:glassRowsNeedReink = $false
+      Update-SessionRowsInk
+    }
+    return $true
+  } catch {
+    Dbg "GLASS UPDATE FAIL: $($_.Exception.Message)"
+    return $false
+  }
+}
+
+# Clip
+# ActualWidth/ActualHeight
+# 400ms
+$script:glassGeomSize = @{}
+# 0.12
+$script:glassLoggedLum = @{}
+$script:glassLoggedPoles = @{}
+$script:glassRowsNeedReink = $false
+
+function Sync-GlassGeometry {
+  try {
+    $specs = @(
+      @{ P = 'Pill';  R = $script:glassRadiusPill;  S = 0.0 },
+      @{ P = 'Panel'; R = $script:glassRadiusPanel; S = $script:glassSmoothPanel }
+    )
+    foreach ($sp in $specs) {
+      $glass = $window.FindName("$($sp.P)Glass")
+      if (-not $glass) { continue }
+      if ($sp.P -eq 'Panel' -and $glass.Visibility -ne [System.Windows.Visibility]::Visible) { continue }
+      $w = [int]$glass.ActualWidth
+      $h = [int]$glass.ActualHeight
+      if ($w -lt 8 -or $h -lt 8) { continue }
+      $key = "$($sp.P)"
+      if ($script:glassGeomSize[$key] -eq "$w x $h") { continue }
+      if (Update-GlassGeometry $sp.P $sp.R $sp.S) {
+        $script:glassGeomSize[$key] = "$w x $h"
+      }
+    }
+    return $true
+  } catch {
+    Dbg "GLASS GEOM SYNC FAIL: $($_.Exception.Message)"
+    return $false
+  }
+}
 $script:pillHeight      = 70
 $script:listHideTimer   = $null
 
+# Apple HIG "Color" dark
+# Tailwind
 $stateMap = @{
-  idle     = @{ dot='#FF6B7280'; ring='#FF6B7280'; label='mcode';             icon='' }
-  thinking = @{ dot='#FFEAB308'; ring='#FFEAB308'; label='mcode - thinking';     icon='' }
-  working  = @{ dot='#FF3B82F6'; ring='#FF3B82F6'; label='mcode - working';     icon='*' }
-  waiting  = @{ dot='#FFF59E0B'; ring='#FFF59E0B'; label='mcode - waiting';  icon='?' }
-  done     = @{ dot='#FF22C55E'; ring='#FF22C55E'; label='mcode - done';     icon='+' }
-  error    = @{ dot='#FFEF4444'; ring='#FFEF4444'; label='mcode - error';       icon='x' }
+  idle     = @{ dot='#FF8E8E93'; ring='#FF8E8E93'; label='mcode';             icon='' }
+  thinking = @{ dot='#FFFFD60A'; ring='#FFFFD60A'; label='mcode - thinking';     icon='' }
+  working  = @{ dot='#FF0A84FF'; ring='#FF0A84FF'; label='mcode - working';     icon='*' }
+  waiting  = @{ dot='#FFFF9F0A'; ring='#FFFF9F0A'; label='mcode - waiting';  icon='?' }
+  done     = @{ dot='#FF30D158'; ring='#FF30D158'; label='mcode - done';     icon='+' }
+  error    = @{ dot='#FFFF453A'; ring='#FFFF453A'; label='mcode - error';       icon='x' }
 }
 
 # session v0.5.0
@@ -404,6 +1217,83 @@ function Read-SessionsFile {
   }
 }
 
+# " detector "
+# detector 1 ack
+# sessions.json
+# widget Show-SessionList detector
+# id sessions.json pending
+# Show-SessionList
+$script:pendingDismiss = @{}
+
+# Windows
+# MouseEnter MouseDown MouseEnter
+$script:foregroundBeforeAction = [IntPtr]::Zero
+
+function Get-WidgetHwnd {
+  try {
+    $helper = New-Object System.Windows.Interop.WindowInteropHelper($window)
+    return $helper.Handle
+  } catch {
+    return [IntPtr]::Zero
+  }
+}
+
+function Save-ForegroundBeforeAction {
+  try {
+    $fg = [WinAPI]::GetForegroundWindow()
+    if ($fg -eq [IntPtr]::Zero) { return }
+    $self = Get-WidgetHwnd
+    if ($self -ne [IntPtr]::Zero -and $fg -eq $self) { return }
+    $script:foregroundBeforeAction = $fg
+  } catch {
+  }
+}
+
+# SetForegroundWindow " " z-order
+# SetForegroundWindow Windows
+function Restore-ForegroundAfterAction {
+  $target = $script:foregroundBeforeAction
+  if ($target -eq [IntPtr]::Zero) { return }
+  try {
+    if (-not [WinAPI]::IsWindow($target)) { return }
+    [WinAPI]::SetForegroundWindow($target) | Out-Null
+    $now = [WinAPI]::GetForegroundWindow()
+    if ($now -eq $target) {
+      Dbg ("foreground restored to hwnd=" + $target)
+    } else {
+      Dbg ("foreground NOT restored (wanted hwnd=" + $target + ", now=" + $now + ")")
+    }
+  } catch {
+    Dbg ("FOREGROUND RESTORE FAIL: " + $_.Exception.Message)
+  }
+}
+
+# ack.signal detector
+# id
+# " id" detector ack.signal
+# detector ack.signal
+function Write-AckSignal([string]$id) {
+  if (-not $id) { return $false }
+  $ackFile = Join-Path $configDir 'ack.signal'
+  $tmp = $ackFile + '.tmp'
+  try {
+    $existing = ''
+    if (Test-Path -LiteralPath $ackFile) {
+      try { $existing = [System.IO.File]::ReadAllText($ackFile) } catch { $existing = '' }
+    }
+    $text = $existing
+    if ($text.Length -gt 0 -and -not $text.EndsWith("`n")) { $text = $text + "`n" }
+    $text = $text + $id + "`n"
+    [System.IO.File]::WriteAllText($tmp, $text, (New-Object System.Text.UTF8Encoding($false)))
+    Move-Item -LiteralPath $tmp -Destination $ackFile -Force
+    return $true
+  } catch {
+    Dbg "SESSION ACK FAIL: $($_.Exception.Message)"
+    try { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } } catch {}
+    return $false
+  }
+}
+
 function Clear-SessionRows {
   if (-not $script:sessionRows) { return }
   $script:sessionRows.Children.Clear()
@@ -414,6 +1304,11 @@ function Clear-SessionRows {
 # 12.5px 17 + 11px 15 + 2
 # + 14 + 1 = 49 48
 $script:sessionRowHeight = 48
+
+# detector $script:MAX_SESSIONS 20 20 48px
+# 960px
+# " N "
+$script:MAX_SESSION_ROWS = 12
 
 # 60 "3 "
 # HH:mm "3 " "13:09"
@@ -428,27 +1323,32 @@ function Format-RelativeTime([int64]$tsMs) {
 }
 
 # [ ] 3
-function Add-SessionRow([string]$id, [string]$title, [string]$phase, [string]$preview, [string]$lastTool, [int64]$lastAtMs, [bool]$isLast) {
+  function Add-SessionRow([string]$id, [string]$title, [string]$phase, [string]$preview, [string]$lastTool, [int64]$lastAtMs, [bool]$isLast) {
   if (-not $script:sessionRows) { return }
  # pill working/thinking/waiting/idle/done/error
  # pill
  # running/waiting/stopped pill
  # " " " " pill " "
  # "running" sessions.json
+ # pill
+ # Tailwind #3B82F6 pill Apple
+ # #0A84FF " pill "
   $stateTextMap = @{
-    'working'  = @{ text = 'Running';   dot = '#FF3B82F6' }
-    'thinking' = @{ text = 'Thinking';   dot = '#FFEAB308' }
-    'waiting'  = @{ text = 'Waiting for approval'; dot = '#FFF59E0B' }
-    'idle'     = @{ text = 'Awaiting reply';   dot = '#FF6B7280' }
-    'done'     = @{ text = 'Done';   dot = '#FF22C55E' }
-    'error'    = @{ text = 'Error';     dot = '#FFEF4444' }
-    'stopped'  = @{ text = 'Stopped';   dot = '#FF4B5563' }
-    'running'  = @{ text = 'Running';   dot = '#FF3B82F6' }
+    'working'  = @{ text = 'Running';   state = 'working' }
+    'thinking' = @{ text = 'Thinking';   state = 'thinking' }
+    'waiting'  = @{ text = 'Waiting for approval'; state = 'waiting' }
+    'idle'     = @{ text = 'Awaiting reply';   state = 'idle' }
+    'done'     = @{ text = 'Done';   state = 'done' }
+    'error'    = @{ text = 'Error';     state = 'error' }
+    'stopped'  = @{ text = 'Stopped';   state = 'idle' }
+    'running'  = @{ text = 'Running';   state = 'working' }
   }
   $stateInfo = $stateTextMap[[string]$phase]
   if (-not $stateInfo) { $stateInfo = $stateTextMap['idle'] }
-  $dotHex = $stateInfo.dot
   $phaseText = $stateInfo.text
+  $smap = Get-PanelStateMap
+  $dotHex = $smap[$stateInfo.state].dot
+  if (-not $dotHex) { $dotHex = $smap['idle'].dot }
 
  # toolCall "
   $subText = ''
@@ -466,9 +1366,13 @@ function Add-SessionRow([string]$id, [string]$title, [string]$phase, [string]$pr
   $colTitle.Width = New-Object System.Windows.GridLength(1, [System.Windows.GridUnitType]::Star)
   $colTag = New-Object System.Windows.Controls.ColumnDefinition
   $colTag.Width = New-Object System.Windows.GridLength(1, [System.Windows.GridUnitType]::Auto)
+ # Star
+  $colX = New-Object System.Windows.Controls.ColumnDefinition
+  $colX.Width = New-Object System.Windows.GridLength(1, [System.Windows.GridUnitType]::Auto)
   $grid.ColumnDefinitions.Add($colDot) | Out-Null
   $grid.ColumnDefinitions.Add($colTitle) | Out-Null
   $grid.ColumnDefinitions.Add($colTag) | Out-Null
+  $grid.ColumnDefinitions.Add($colX) | Out-Null
 
   $rowTop = New-Object System.Windows.Controls.RowDefinition
   $rowTop.Height = New-Object System.Windows.GridLength(1, [System.Windows.GridUnitType]::Auto)
@@ -478,21 +1382,23 @@ function Add-SessionRow([string]$id, [string]$title, [string]$phase, [string]$pr
   $grid.RowDefinitions.Add($rowBot) | Out-Null
 
   $dot = New-Object System.Windows.Shapes.Ellipse
-  $dot.Width = 7; $dot.Height = 7
+  $dot.Width = 8; $dot.Height = 8
   $dot.Fill = (New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString($dotHex)))
   $dot.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
-  $dot.Margin = New-Object System.Windows.Thickness(0,0,9,0)
+  $dot.Margin = New-Object System.Windows.Thickness(0,0,10,0)
+
+  $ink = Get-PanelInk
 
   $txt = New-Object System.Windows.Controls.TextBlock
   $txt.Text = if ($title) { $title } else { $id }
-  $txt.Foreground = (New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString('#FFF5F5F7')))
-  $txt.FontSize = 12.5
+  $txt.Foreground = C $ink.Primary
+  $txt.FontSize = 13
   $txt.TextTrimming = [System.Windows.TextTrimming]::CharacterEllipsis
   $txt.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
 
   $sub = New-Object System.Windows.Controls.TextBlock
   $sub.Text = $subText
-  $sub.Foreground = (New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString('#FF8B93A1')))
+  $sub.Foreground = C $ink.Secondary
   $sub.FontSize = 11
   $sub.TextTrimming = [System.Windows.TextTrimming]::CharacterEllipsis
   $sub.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
@@ -505,27 +1411,71 @@ function Add-SessionRow([string]$id, [string]$title, [string]$phase, [string]$pr
 
   $time = New-Object System.Windows.Controls.TextBlock
   $time.Text = (Format-RelativeTime $lastAtMs)
-  $time.Foreground = (New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString('#FF9CA3AF')))
-  $time.FontSize = 10
+  $time.Foreground = C $ink.Tertiary
+  $time.FontSize = 11
   $time.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Right
 
   $tag = New-Object System.Windows.Controls.TextBlock
   $tag.Text = $phaseText
   $tag.Foreground = (New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString($dotHex)))
-  $tag.FontSize = 10
+  $tag.FontSize = 11
   $tag.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Right
 
   $right.Children.Add($time) | Out-Null
   $right.Children.Add($tag) | Out-Null
 
+ # TextBlock Button Button
+ # TextBlock
+ # Tab
+  $xMark = New-Object System.Windows.Controls.TextBlock
+  $xMark.Text = 'x'
+  $xMark.FontSize = 15
+  $xMark.Foreground = C $ink.Tertiary
+  $xMark.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+  $xMark.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Center
+  $xMark.Margin = New-Object System.Windows.Thickness(10,0,2,0)
+  $xMark.Cursor = [System.Windows.Input.Cursor]::Hand
+  $xMark.ToolTip = 'Remove from the list (no switch)'
+ # TextBlock Tab Enter/Space
+  $xMark.Focusable = $true
+
+ # hover " "
+  $xIdleBrush = $xMark.Foreground
+  $xHotBrush = (New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString('#FFFF453A')))
+ # $args[0] sender TextBlock MouseLeftButtonDown
+ # $args[1]
+  $xMark.Add_MouseEnter({ $args[0].Foreground = $xHotBrush }.GetNewClosure())
+  $xMark.Add_MouseLeave({ $args[0].Foreground = $xIdleBrush }.GetNewClosure())
+
+ # Handled = true Border MouseLeftButtonDown
+ # Border Border +
+ # Invoke-SessionDismiss Restore-ForegroundAfterAction
+  $xMark.Add_MouseLeftButtonDown({
+    $args[1].Handled = $true
+    Invoke-SessionDismiss $id
+  }.GetNewClosure())
+
+ # Enter / Space
+ # Tab
+  $xMark.Add_KeyDown({
+    $key = [string]$args[1].Key
+ # WPF Enter Return Enter
+    if ($key -ne 'Return' -and $key -ne 'Enter' -and $key -ne 'Space') { return }
+    $args[1].Handled = $true
+    Dbg ("session dismissed by keyboard: " + $key + " " + $id)
+    Invoke-SessionDismiss $id
+  }.GetNewClosure())
+
   $grid.Children.Add($dot)   | Out-Null
   $grid.Children.Add($txt)   | Out-Null
   $grid.Children.Add($right) | Out-Null
   $grid.Children.Add($sub)   | Out-Null
+  $grid.Children.Add($xMark) | Out-Null
   [System.Windows.Controls.Grid]::SetColumn($dot, 0)
   [System.Windows.Controls.Grid]::SetColumn($txt, 1)
   [System.Windows.Controls.Grid]::SetColumn($right, 2)
   [System.Windows.Controls.Grid]::SetColumn($sub, 1)
+  [System.Windows.Controls.Grid]::SetColumn($xMark, 3)
   [System.Windows.Controls.Grid]::SetRow($dot, 0)
   [System.Windows.Controls.Grid]::SetRow($txt, 0)
   [System.Windows.Controls.Grid]::SetRow($right, 0)
@@ -551,10 +1501,26 @@ function Add-SessionRow([string]$id, [string]$title, [string]$phase, [string]$pr
  # Handled=true MouseLeftButtonDown
   $border.Add_MouseLeftButtonDown({
     $args[1].Handled = $true
+ # Handled
+ # " " WPF
+    if ($args[1].OriginalSource -eq $xMark) { return }
     Invoke-SessionClick $id
   }.GetNewClosure())
 
   $script:sessionRows.Children.Add($border) | Out-Null
+}
+
+# 12 5
+function Add-SessionOverflowRow([int]$hidden) {
+  if (-not $script:sessionRows) { return }
+  if ($hidden -le 0) { return }
+  $tb = New-Object System.Windows.Controls.TextBlock
+  $tb.Text = '' + $hidden + ' more'
+  $tb.Foreground = C (Get-PanelInk).Muted
+  $tb.FontSize = 10.5
+  $tb.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Center
+  $tb.Margin = New-Object System.Windows.Thickness(0,6,0,2)
+  $script:sessionRows.Children.Add($tb) | Out-Null
 }
 
 function Show-SessionList {
@@ -567,6 +1533,29 @@ function Show-SessionList {
   }
   $items = Read-SessionsFile
   if (-not $items -or $items.Count -eq 0) { Hide-SessionList; return }
+ # " detector "
+ # detector ack sessions.json
+ # id sessions.json detector
+ # pending pending
+ # " sessions.json " detector id
+ # Show-SessionList
+ # id pending
+ # pending 4 detector ack 4
+ # id
+  if ($script:pendingDismiss.Count -gt 0) {
+    $present = @{}
+    foreach ($s in $items) { $present[[string]$s.id] = $true }
+    $now = [DateTime]::UtcNow
+    foreach ($pid_ in @($script:pendingDismiss.Keys)) {
+      $stamp = $script:pendingDismiss[$pid_]
+      $gone = (-not $present.ContainsKey($pid_))
+      $expired = $false
+      if ($stamp -is [datetime]) { $expired = (($now - $stamp).TotalSeconds -gt 4) }
+      if ($gone -or $expired) { $script:pendingDismiss.Remove($pid_) }
+    }
+    $items = @($items | Where-Object { -not $script:pendingDismiss.ContainsKey([string]$_.id) })
+    if (-not $items -or $items.Count -eq 0) { Hide-SessionList; return }
+  }
   Clear-SessionRows
  # lastAtMs sinceMs
   $stateOrder = @{
@@ -574,24 +1563,47 @@ function Show-SessionList {
     'done' = 3; 'error' = 4; 'stopped' = 5; 'running' = 0
   }
   $sorted = @($items | Sort-Object @{ Expression = { $k = [string]$_.phase; if ($stateOrder.ContainsKey($k)) { $stateOrder[$k] } else { 2 } } }, @{ Expression = { if ($_.lastAtMs) { [int64]$_.lastAtMs } else { [int64]$_.sinceMs } }; Descending = $true })
+ # " N "
+  $total = $sorted.Count
+  $hidden = 0
+  if ($total -gt $script:MAX_SESSION_ROWS) {
+    $hidden = $total - $script:MAX_SESSION_ROWS
+    $sorted = @($sorted | Select-Object -First $script:MAX_SESSION_ROWS)
+  }
   $i = 0
   foreach ($s in $sorted) {
-    Add-SessionRow ([string]$s.id) ([string]$s.title) ([string]$s.phase) ([string]$s.preview) ([string]$s.lastTool) ([int64]$s.lastAtMs) ($i -lt ($sorted.Count - 1))
+    Add-SessionRow ([string]$s.id) ([string]$s.title) ([string]$s.phase) ([string]$s.preview) ([string]$s.lastTool) ([int64]$s.lastAtMs) ($i -lt ($sorted.Count - 1) -and $hidden -eq 0)
     $i++
   }
+  if ($hidden -gt 0) { Add-SessionOverflowRow $hidden }
  # SessionPanel
- # Margin 14 + Padding 12 + Border 2 106px row
- # 94px 14px
+ # Margin 106px row 94px
+ # 14px
  # row 1 Auto Grid
  # DesiredSize " "
   $script:sessionRowsPanel.Visibility = [System.Windows.Visibility]::Visible
   $script:sessionListRow.Height = [System.Windows.GridLength]::Auto
   $script:sessionRowsPanel.UpdateLayout()
- # DesiredSize Margin SessionPanel 14px
-  $listH = [int][Math]::Ceiling($script:sessionRowsPanel.DesiredSize.Height) + 14
+ # DesiredSize Margin (6)
+  $listH = [int][Math]::Ceiling($script:sessionRowsPanel.DesiredSize.Height) + 6 + $script:glassMarginPanelBottom
   if ($listH -le 0) { $listH = ($sorted.Count * $script:sessionRowHeight) + 26 }
-  $window.Height = $script:pillHeight + $listH
-  Dbg ("session list shown: " + $sorted.Count + " winH=" + $window.Height + " listH=" + $listH)
+ # /DIP
+  try {
+    $wa = [WinAPI]::GetWorkAreaForWindow($window)
+    if ($wa.Left -ne -1) {
+      $maxH = ($wa.Bottom - $wa.Top) - $window.Top
+      $chrome = $script:pillHeight + 2 * $script:glassMargin
+      if ($maxH -gt $chrome -and ($chrome + $listH) -gt $maxH) {
+        $listH = [int][Math]::Floor($maxH) - $chrome
+        Dbg ("session list clamped to the work area: listH=" + $listH)
+      }
+    }
+  } catch {}
+  $window.Height = $script:pillHeight + 2 * $script:glassMargin + $listH
+ # Height ** **
+  try { Sync-GlassGeometry } catch {}
+  try { [void](Update-GlassBackdrop) } catch {}
+  Dbg ("session list shown: " + $sorted.Count + " hidden=" + $hidden + " winH=" + $window.Height + " listH=" + $listH)
 }
 
 function Hide-SessionList {
@@ -605,7 +1617,7 @@ function Hide-SessionList {
   if ($script:sessionListRow) {
     $script:sessionListRow.Height = New-Object System.Windows.GridLength(0)
   }
-  if ($window) { $window.Height = $script:pillHeight }
+  if ($window) { $window.Height = $script:pillHeight + 2 * $script:glassMargin }
 }
 
 function Schedule-SessionListHide {
@@ -622,12 +1634,21 @@ function Schedule-SessionListHide {
 
 function Invoke-SessionClick([string]$id) {
   if (-not $id) { return }
+ # id sessions.json
+ # ** ** id
+ # ack
+ # scripts/lib/Session-Tracker.ps1 $script:SESSION_ID_PATTERN
+ # detector widget
+  if ($id -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$') {
+    Dbg "session click: refused an id that is not shaped like a session id"
+    return
+  }
  # ack.signal detector
  # session
   try {
-    $ackFile = Join-Path $configDir 'ack.signal'
-    [System.IO.File]::WriteAllText($ackFile, $id, [System.Text.Encoding]::UTF8)
-    Dbg "session ack written: $id"
+    if (Write-AckSignal $id) {
+      Dbg "session ack written: $id"
+    }
   } catch {
     Dbg "SESSION ACK FAIL: $($_.Exception.Message)"
   }
@@ -671,7 +1692,30 @@ function Invoke-SessionClick([string]$id) {
     }
   }
  # app
-  Start-SessionTerminal $id
+ # `Start-SessionTerminal $id` "mcode --session <id>"
+ # 1. id powershell -Command
+ # `x; Set-Content ...` id PowerShell
+ # 2. id ** **
+ # app
+  Dbg ("session click: no target for " + $id + " (no matching tab, no app window) -- not opening a new terminal")
+}
+
+# detector ack agent
+function Invoke-SessionDismiss([string]$id) {
+  if (-not $id) { return }
+ # Invoke-SessionClick id sessions.json
+  if ($id -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$') {
+    Dbg "session dismiss: refused an id that is not shaped like a session id"
+    return
+  }
+  if (-not (Write-AckSignal $id)) { return }
+ # detector 1 ack
+ # sessions.json
+ # true Show-SessionList " pending
+  $script:pendingDismiss[$id] = [DateTime]::UtcNow
+  Dbg ("session dismissed without switching: " + $id)
+  try { Show-SessionList } catch { Dbg "SESSION LIST REFRESH FAIL: $($_.Exception.Message)" }
+  Restore-ForegroundAfterAction
 }
 
 # app ** **
@@ -991,41 +2035,30 @@ function Activate-TerminalWindow {
   return $false
 }
 
-# session mcode --session <id>
-# Windows Terminal wt.exe PATH conhost start
-# mcode .ps1 cmd powershell
-function Start-SessionTerminal([string]$id) {
-  $inner = "mcode --session $id"
-  try {
-    $wt = Get-Command wt.exe -ErrorAction SilentlyContinue
-    if ($wt) {
-      Start-Process -FilePath $wt.Source -ArgumentList @(
-        '-w', '0', 'new-tab', '--title', 'mcode',
-        'powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $inner)
-    } else {
-      Start-Process -FilePath 'cmd.exe' -ArgumentList @(
-        '/c', 'start', '', 'powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $inner)
-    }
-    Dbg "session jumped: $id"
-  } catch {
-    Dbg "SESSION JUMP FAIL: $($_.Exception.Message)"
-  }
-}
+# ** ** Start-SessionTerminal
+# "mcode --session <id>"
+# review
+# 1. id `powershell -Command` id
+# base64 sessions.json
+# `x; Set-Content ...` id PowerShell "
+# 2. ** **
+# smoke.mjs
 
 # working family state " " " "
 # dot/ring stateText
 # family detector $TOOL_FAMILIES family state
 # (shell) / (read) / (write) / (search) / (task) /
-# (web) / (plan) plan #8B5CF6 search #A855F7
-# pill
+# (web) / (plan) Apple CIE76 dE
+# 20 " " plan
+# search
 $familyMap = @{
-  shell  = '#FF22C55E' # bash / shell
-  read   = '#FF3B82F6' # read
-  write  = '#FFEAB308' # edit / write
-  search = '#FFA855F7' # grep / glob
-  task   = '#FF06B6D4' # task
-  web    = '#FFEC4899' # web_search/fetch
-  plan   = '#FF94A3B8' # todowrite
+  shell  = '#FF30D158' # bash / shell
+  read   = '#FF0A84FF' # read
+  write  = '#FFFFD60A' # edit / write
+  search = '#FFBF5AF2' # grep / glob
+  task   = '#FF40C8E0' # task
+  web    = '#FFFF375F' # web_search/fetch
+  plan   = '#FF8E8E93' # todowrite
 }
 
 # brush
@@ -1195,17 +2228,28 @@ function Update-State {
     [string]$Detail = '',
     [string]$Family = ''
   )
-  $s = $script:stateMap[$State]
-  if (!$s) { $s = $script:stateMap['idle'] }
+ # Apple
+  $smap = Get-GlassStateMap
+  $fmap = Get-GlassFamilyMap
+  $s = $smap[$State]
+  if (!$s) { $s = $smap['idle'] }
  # active thinking/working/waiting done / error
   $dotHex  = $s.dot
   $ringHex = $s.ring
   if ($Family -and $State -in @('thinking','working','waiting')) {
-    $famHex = $script:familyMap[$Family]
+    $famHex = $fmap[$Family]
     if ($famHex) { $dotHex = $famHex; $ringHex = $famHex }
   }
   $script:statusDot.Fill = C $dotHex
   $script:pulseRing.Fill = C $ringHex
+ # " " done / error
+  if ($State -in @('thinking','working','waiting')) {
+ # Effect.Color Color Brush C() Brush
+    $script:statusDotGlow.Color = [System.Windows.Media.ColorConverter]::ConvertFromString($dotHex)
+    $script:statusDotGlow.Opacity = 0.85
+  } else {
+    $script:statusDotGlow.Opacity = 0.0
+  }
   $script:stateText.Text = $s.label
   $script:messageText.Text = Build-DisplayMessage -Message $Message -Step $Step -Total $Total -Detail $Detail
   $script:actionIcon.Text = $s.icon
@@ -1221,13 +2265,14 @@ function Update-State {
     if ($hasTime) { $parts += (Format-ResetMs $Usage5hResetMs) }
     if ($hasPct)  { $parts += ("{0}%" -f [int]$Usage5h) }
     $script:usage5hText.Text = $parts -join ' '
-    $col = if ($Usage5h -ge 50) { '#FF6B7280' } # >= 50%
-           elseif ($Usage5h -ge 20) { '#FFEAB308' } # 20-50%
-           else { '#FFEF4444' } # < 20%
+    $ink = Get-GlassInk
+    $col = if ($Usage5h -ge 50) { $ink.Dim } # >= 50%
+           elseif ($Usage5h -ge 20) { $ink.Warn } # 20-50%
+           else { $ink.Danger } # < 20%
     $script:usage5hText.Foreground = C $col
   } else {
     $script:usage5hText.Text = ''
-    $script:usage5hText.Foreground = C '#FF6B7280'
+    $script:usage5hText.Foreground = C (Get-GlassInk).Dim
   }
 
  # Elapsed timer active / state active
@@ -1727,21 +2772,24 @@ function Assert-Topmost {
   }
 }
 
+# DropShadowEffect
+# layered alpha
+# cfg.x/cfg.y ** **
 $screen = [System.Windows.SystemParameters]::WorkArea
 if ($cfg.x -lt 0) {
-  $window.Left = [Math]::Floor(($screen.Width - $cfg.width) / 2) + $screen.Left
-  $window.Top  = $screen.Top + 14
+  $window.Left = [Math]::Floor(($screen.Width - $cfg.width) / 2) + $screen.Left - $script:glassMargin
+  $window.Top  = $screen.Top + 14 - $script:glassMargin
 } else {
-  $window.Left = $cfg.x
-  $window.Top  = $cfg.y
+  $window.Left = $cfg.x - $script:glassMargin
+  $window.Top  = $cfg.y - $script:glassMargin
 }
-$window.Width  = $cfg.width
-$window.Height = $cfg.height
-# row 0 session
-$script:pillHeight = $window.Height
+$window.Width  = $cfg.width + 2 * $script:glassMargin
+$window.Height = $cfg.height + 2 * $script:glassMargin
+# row 0 " + " session
+$script:pillHeight = $cfg.height
 try {
   $pillRow = $window.FindName('PillRow')
-  if ($pillRow) { $pillRow.Height = New-Object System.Windows.GridLength($script:pillHeight) }
+  if ($pillRow) { $pillRow.Height = New-Object System.Windows.GridLength($script:pillHeight + 2 * $script:glassMargin) }
 } catch {}
 $window.Opacity = $cfg.opacity
 
@@ -1811,6 +2859,8 @@ $window.Add_MouseMove({
  # dragStart
   if ($null -eq $script:dragStart -and $script:sessionRowsPanel -and
       $script:sessionRowsPanel.Visibility -ne [System.Windows.Visibility]::Visible) {
+ # MouseEnter widget
+    Save-ForegroundBeforeAction
     try { Show-SessionList } catch { Dbg "SESSION LIST SHOW FAIL: $($_.Exception.Message)" }
   }
   if ($null -eq $script:dragStart) { return }
@@ -1836,9 +2886,18 @@ $window.Add_MouseMove({
   } catch {
     Dbg "DRAG FAIL: $($_.Exception.Message)"
   }
+ # + MouseMove 250ms
+  try {
+    $now2 = [DateTime]::UtcNow
+    if (($now2 - $script:glassDragStamp).TotalMilliseconds -ge 250) {
+      $script:glassDragStamp = $now2
+      [void](Update-GlassBackdrop)
+    }
+  } catch {}
 })
 $window.Add_MouseLeftButtonUp({
   try { $window.ReleaseMouseCapture() } catch {}
+  $wasDrag = $script:didDrag
   try {
     if ($script:dragStart -and -not $script:didDrag) {
       Dbg 'CLICK detected'
@@ -1847,6 +2906,9 @@ $window.Add_MouseLeftButtonUp({
     }
   } catch {
     Dbg "CLICK FAIL: $($_.Exception.Message)"
+  }
+  if ($wasDrag) {
+    try { [void](Update-GlassBackdrop) } catch {}
   }
   $script:dragStart = $null
   $script:didDrag = $false
@@ -1857,12 +2919,27 @@ $window.Add_MouseLeftButtonUp({
 # pill " "
 $window.Add_MouseEnter({
   if ($script:listHideTimer) { try { $script:listHideTimer.Stop() } catch {} ; $script:listHideTimer = $null }
+  Save-ForegroundBeforeAction
   try { Show-SessionList } catch { Dbg "SESSION LIST SHOW FAIL: $($_.Exception.Message)" }
 })
 $window.Add_MouseLeave({
   Schedule-SessionListHide
 })
 
+
+# ContentRendered Loaded Loaded
+# ActualWidth/ActualHeight
+# XAML
+$window.Add_ContentRendered({
+  try {
+    Sync-GlassGeometry
+    [void](Apply-GlassMaterial 'Pill' 0.25 $false)
+    [void](Update-GlassBackdrop)
+    Dbg 'glass material initialized'
+  } catch {
+    Dbg "GLASS INIT FAIL: $($_.Exception.Message)"
+  }
+})
 
 # FileSystemWatcher status.json FSW WPF
 $script:lastStatusMtime = $null
@@ -1873,7 +2950,17 @@ $timer.Interval = [TimeSpan]::FromMilliseconds(400)
 $timer.Add_Tick({
  # 0) 1.5s
   Assert-Topmost
- # 1) "show" "mcode-island show"
+ # 1) Liquid Glass
+ # WWDC25
+ # return status.json
+  try {
+    if ($window.Visibility -eq [System.Windows.Visibility]::Visible -and
+        ([DateTime]::UtcNow - $script:glassLastUpdate).TotalMilliseconds -ge $script:glassRefreshMs) {
+      Sync-GlassGeometry
+      [void](Update-GlassBackdrop)
+    }
+  } catch {}
+ # 2) "show" "mcode-island show"
   if (Test-Path $showSignalFile) {
     try { Remove-Item $showSignalFile -Force -ErrorAction SilentlyContinue } catch {}
     $window.Dispatcher.Invoke([Action]{
@@ -1960,8 +3047,8 @@ $window.Add_Closing({
   try { Hide-SessionList } catch {}
   try {
     $cur = Get-Content $script:configFile -Raw -Encoding UTF8 | ConvertFrom-Json
-    $cur.x = $window.Left
-    $cur.y = $window.Top
+    $cur.x = $window.Left + $script:glassMargin
+    $cur.y = $window.Top + $script:glassMargin
     $cur | ConvertTo-Json | Out-File -Path $script:configFile -Encoding UTF8
   } catch {}
   $window.Hide()
